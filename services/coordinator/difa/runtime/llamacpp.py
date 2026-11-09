@@ -20,6 +20,7 @@ from pathlib import Path
 
 import httpx
 
+from .. import gguf
 from ..catalog import MODEL_FILES
 from .base import Cancelled, Generation, RuntimeFailure
 
@@ -68,12 +69,29 @@ class LlamaCppRuntime:
                 raise ValueError(f"{name}: non-loopback RPC endpoint {ep} refused; llama.cpp RPC is insecure")
         self._deployments: dict[str, dict] = {}
         self._verified: dict[str, str] = {}
+        self._tables: dict[str, tuple[dict, list]] = {}
 
     @classmethod
     def from_env(cls) -> "LlamaCppRuntime":
         return cls(bin_dir=os.environ["DIFA_LLAMACPP_BIN"], model_dir=os.environ["DIFA_MODEL_DIR"],
                    local_device=os.environ["DIFA_LLAMACPP_LOCAL_DEVICE"],
                    rpc_endpoints=json.loads(os.environ.get("DIFA_LLAMACPP_RPC", "{}")))
+
+    def model_path(self, name: str) -> Path:
+        return self._model_path(name)
+
+    def tensor_table(self, path: Path) -> tuple[dict, list]:
+        key = str(path)
+        if key not in self._tables:
+            self._tables[key] = gguf.read(path)
+        return self._tables[key]
+
+    def stage_tensors(self, model_name: str, stages: list[dict]) -> list[list[dict]]:
+        """File ranges each stage will hold, in execution order (exactly as llama.cpp will place them)."""
+        meta, tensors = self.tensor_table(self._model_path(model_name))
+        n_layer = int(meta[f"{meta['general.architecture']}.block_count"])
+        shares = gguf.tensor_split([tuple(st["layers"]) for st in stages], n_layer)
+        return gguf.stage_tensors(tensors, n_layer, shares)
 
     def _model_path(self, name: str) -> Path:
         meta = MODEL_FILES.get(name)
@@ -97,7 +115,8 @@ class LlamaCppRuntime:
                 devs.append("MTL0")
                 owners["MTL0"] = st
             elif st["name"] in self.rpc_endpoints or st.get("endpoint"):
-                ep = self.rpc_endpoints.get(st["name"]) or st["endpoint"]
+                # A tunnelled stage is reached through its loopback forwarder (difa.transport).
+                ep = self.rpc_endpoints.get(st["name"]) or st.get("rpc_endpoint") or st["endpoint"]
                 if not self.allow_remote_rpc and not ep.startswith(LOOPBACK_PREFIXES):
                     raise RuntimeFailure("ENDPOINT_REFUSED", f"Non-loopback worker {ep} refused: llama.cpp RPC "
                                          "is insecure outside a restricted research network.", False)
@@ -106,16 +125,22 @@ class LlamaCppRuntime:
                 owners[f"rpc:{ep}"] = st
             else:
                 raise RuntimeFailure("NO_ENDPOINT", f"No llama.cpp endpoint configured for {st['name']}.", False)
-        shares = [st["layers"][1] - st["layers"][0] for st in placement["stages"]]
+        meta, _ = await asyncio.to_thread(self.tensor_table, path)
+        n_layer = int(meta[f"{meta['general.architecture']}.block_count"])
+        try:  # exact split points: raw layer counts would shift boundaries by the output slot
+            shares = gguf.tensor_split([tuple(st["layers"]) for st in placement["stages"]], n_layer)
+        except ValueError as e:
+            raise RuntimeFailure("PLACEMENT_UNSUPPORTED", str(e), retryable=False) from None
+        expected = self.stage_tensors(model_name, placement["stages"])
         port, key = _free_port(), secrets.token_urlsafe(24)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.log_dir / f"{deployment_id}.log"
         args = [str(self.bin / "llama-server"), "-m", str(path), "--host", "127.0.0.1", "--port", str(port),
                 "--api-key", key, "-c", str(placement["model"].get("max_context_tokens", 4096)), "-np", "1",
-                "--no-webui", "-lv", "4", "-fit", "off", "-ngl", "99"]
+                "--no-webui", "-lv", "4", "-fit", "off", "-ngl", "999"]
         if rpc:  # must precede -dev: llama-server registers RPC devices when it parses --rpc
             args += ["--rpc", ",".join(rpc)]
-        args += ["-dev", ",".join(devs), "-ts", ",".join(str(s) for s in shares)]
+        args += ["-dev", ",".join(devs), "-ts", ",".join(repr(s) for s in shares)]
         log = open(log_path, "w")
         proc = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT)
         client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", headers={"Authorization": f"Bearer {key}"},
@@ -134,12 +159,20 @@ class LlamaCppRuntime:
                 raise RuntimeFailure("LOAD_TIMEOUT", "The inference server did not become ready.")
             buffers = parse_model_buffers(log_path.read_text(errors="replace"))
             partition_map = []
+            index = {st["device_id"]: i for i, st in enumerate(placement["stages"])}
             for dev_key, st in owners.items():
                 mib = buffers.get(dev_key, 0.0)
-                partition_map.append({"device_id": st["device_id"], "layers": st["layers"], "model_mib": mib})
+                want = round(sum(t["nbytes"] for t in expected[index[st["device_id"]]]) / (1 << 20), 2)
+                partition_map.append({"device_id": st["device_id"], "layers": st["layers"], "model_mib": mib,
+                                      "expected_mib": want})
             missing = [p["device_id"] for p in partition_map if p["model_mib"] <= 0]
             if missing:
                 raise RuntimeFailure("PARTITION_MISMATCH", f"Devices received no weights: {', '.join(missing)}.")
+            # llama.cpp pads buffers slightly; anything beyond 2% means the plan and the backend disagree.
+            off = [p["device_id"] for p in partition_map if abs(p["model_mib"] - p["expected_mib"]) >
+                   max(1.0, 0.02 * p["expected_mib"])]
+            if off:
+                raise RuntimeFailure("PARTITION_MISMATCH", f"Weights on {', '.join(off)} differ from the plan.")
         except BaseException:
             proc.terminate()
             await client.aclose()

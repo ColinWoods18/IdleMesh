@@ -1,0 +1,77 @@
+{
+  "benchmark": "phase1-tunnel",
+  "utc": "20261109T215057Z",
+  "runs": {
+    "plaintext-rtt0": {
+      "name": "plaintext-rtt0",
+      "load_s": 0.73,
+      "decode_ms": 7.507,
+      "prompt_ms": 156.3,
+      "buffers_mib": {
+        "CPU": 137.94,
+        "MTL0": 302.37,
+        "127.0.0.1:50092": 198.42
+      },
+      "mode": "plaintext",
+      "rtt_ms": 0
+    },
+    "mtls-rtt0": {
+      "name": "mtls-rtt0",
+      "load_s": 0.92,
+      "decode_ms": 8.278,
+      "prompt_ms": 159.9,
+      "buffers_mib": {
+        "CPU": 137.94,
+        "MTL0": 302.37,
+        "127.0.0.1:56582": 198.42
+      },
+      "mode": "mtls",
+      "rtt_ms": 0
+    },
+    "plaintext-rtt20": {
+      "name": "plaintext-rtt20",
+      "load_s": 2.05,
+      "decode_ms": 28.739,
+      "prompt_ms": 184.9,
+      "buffers_mib": {
+        "CPU": 137.94,
+        "MTL0": 302.37,
+        "127.0.0.1:60093": 198.42
+      },
+      "mode": "plaintext",
+      "rtt_ms": 20
+    },
+    "mtls-rtt20": {
+      "name": "mtls-rtt20",
+      "load_s": 2.57,
+      "decode_ms": 30.07,
+      "prompt_ms": 187.3,
+      "buffers_mib": {
+        "CPU": 137.94,
+        "MTL0": 302.37,
+        "127.0.0.1:56696": 198.42
+      },
+      "mode": "mtls",
+      "rtt_ms": 20
+    }
+  },
+  "summary": [
+    {
+      "rtt_ms": 0,
+      "decode_ms_plain": 7.507,
+      "decode_ms_mtls": 8.278,
+      "decode_overhead_ms": 0.771,
+      "load_s_plain": 0.73,
+      "load_s_mtls": 0.92
+    },
+    {
+      "rtt_ms": 20,
+      "decode_ms_plain": 28.739,
+      "decode_ms_mtls": 30.07,
+      "decode_overhead_ms": 1.331,
+      "load_s_plain": 2.05,
+      "load_s_mtls": 2.57
+    }
+  ],
+  "note": "One Mac; worker is a local CPU process; relay simulates delay. Synthetic prompts."
+}

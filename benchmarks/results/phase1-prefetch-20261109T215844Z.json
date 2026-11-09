@@ -1,0 +1,40 @@
+{
+  "benchmark": "phase1-prefetch",
+  "utc": "20261109T215844Z",
+  "link": {
+    "mbps": 50,
+    "rtt_ms": 20
+  },
+  "worker_stage_bytes": 319030272,
+  "worker_cacheable_bytes": 144643072,
+  "cache_files": [
+    "c5d93d2d0af14837"
+  ],
+  "runs": {
+    "cold-cache": {
+      "name": "cold-cache",
+      "load_s": 53.03,
+      "decode_ms": 127.902,
+      "prompt_ms": 854.3,
+      "buffers_mib": {
+        "CPU": 137.94,
+        "MTL0": 196.54,
+        "127.0.0.1:60102": 304.25
+      }
+    },
+    "warm-cache": {
+      "name": "warm-cache",
+      "load_s": 29.98,
+      "decode_ms": 128.043,
+      "prompt_ms": 851.8,
+      "buffers_mib": {
+        "CPU": 137.94,
+        "MTL0": 196.54,
+        "127.0.0.1:60102": 304.25
+      }
+    }
+  },
+  "load_saving_s": 23.05,
+  "expected_saving_s": 23.14,
+  "note": "One Mac; worker is a local CPU process behind a userspace relay. Synthetic prompts."
+}

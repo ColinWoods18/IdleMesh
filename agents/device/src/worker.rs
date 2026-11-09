@@ -16,6 +16,12 @@ pub struct WorkerConfig {
     pub host: String,
     pub port: u16,
     pub threads: u32,
+    /// Address the coordinator dials: the mTLS tunnel when one runs, otherwise the worker itself.
+    pub advertise: String,
+    /// "mtls" when the worker is reachable only through the tunnel, "plaintext" otherwise.
+    pub transport: &'static str,
+    /// Directory for llama.cpp's weight cache (LLAMA_CACHE); the worker runs with -c when set.
+    pub cache_dir: Option<PathBuf>,
 }
 
 impl WorkerConfig {
@@ -95,13 +101,7 @@ impl Worker {
         let rss = if running { self.measure() } else { None };
         let allowed = should_run && self.blocked_below.is_none_or(|need| cap > need);
         match decide(allowed, running, rss, cap) {
-            Decision::Start => match Command::new(&self.cfg.bin)
-                .args(["-H", &self.cfg.host, "-p", &self.cfg.port.to_string(), "-d", "CPU", "-t",
-                       &self.cfg.threads.to_string()])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
+            Decision::Start => match self.command().spawn() {
                 Ok(child) => {
                     self.child = Some(child);
                     self.blocked_below = None;
@@ -126,6 +126,17 @@ impl Worker {
         }
     }
 
+    fn command(&self) -> Command {
+        let mut cmd = Command::new(&self.cfg.bin);
+        cmd.args(["-H", &self.cfg.host, "-p", &self.cfg.port.to_string(), "-d", "CPU", "-t",
+                  &self.cfg.threads.to_string()]);
+        if let Some(dir) = &self.cfg.cache_dir {
+            cmd.arg("-c").env("LLAMA_CACHE", dir);
+        }
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        cmd
+    }
+
     pub fn halt(&mut self, reason: &str) {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
@@ -139,7 +150,8 @@ impl Worker {
         let running = self.running();
         serde_json::json!({
             "state": if running { "running" } else { "stopped" },
-            "endpoint": self.cfg.endpoint(),
+            "endpoint": self.cfg.advertise,
+            "transport": self.cfg.transport,
             "rss_bytes": if running { self.rss } else { 0 },
             "peak_rss_bytes": self.peak_rss,
             "cap_kills": self.cap_kills,

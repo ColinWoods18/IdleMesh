@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -11,7 +12,8 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from ..catalog import CATALOG
+from .. import partition
+from ..catalog import CATALOG, MODEL_FILES
 from ..config import Settings
 from ..domain.access import Branch, ForkError, Principal, Role, Scope, Visibility, can_create_with_visibility, \
     can_delete_branch, can_read_branch, can_write_branch, plan_fork
@@ -24,6 +26,7 @@ from ..scheduler import Scheduler
 from ..security import Passwords, fingerprint, matches, new_id, new_secret, verifier
 from ..store import Store, iso, now, parse
 from ..tokens import context_tokens
+from ..transport import CoordinatorIdentity, TunnelError, TunnelManager, cert_fingerprint, is_certificate
 from . import compat, errors
 from .auth import SESSION_COOKIE, bearer, current, require_admin, require_group, require_session
 from .errors import ApiError, not_found
@@ -53,12 +56,17 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
         await app.state.scheduler.stop()
         for gid, g in list(app.state.scheduler.groups.items()):
             if g.deployment_id:
-                await runtime.unload_deployment(g.deployment_id)
+                await unload(app, g.deployment_id)
+        app.state.tunnels.close_all()
 
     app = FastAPI(title="DIFA Coordinator", version="0.1.0", lifespan=lifespan,
                   description="Distributed Inference For All coordinator prototype. Fake runtime only.")
     app.state.settings, app.state.runtime = settings, runtime
     app.state.store = Store(settings.db_path)
+    tunnel_dir = settings.tunnel_dir or os.path.dirname(os.path.abspath(settings.db_path))
+    app.state.tunnels = TunnelManager(CoordinatorIdentity(tunnel_dir))
+    app.state.prefetch = {}  # group_id -> pending partition download before a deployment loads (FR 30)
+    app.state.prefetch_errors = {}
     app.state.passwords = Passwords(settings.argon2_fast)
     app.state.login_attempts = {}
     errors.install(app)
@@ -93,6 +101,13 @@ async def _liveness_monitor(app) -> None:
     store, sched, settings = app.state.store, app.state.scheduler, app.state.settings
     while True:
         await asyncio.sleep(1)
+        for gid in list(app.state.prefetch):
+            try:
+                await _advance_prefetch(app, gid)
+            except Exception as e:  # noqa: BLE001 - never let one group stop the monitor
+                pending = app.state.prefetch.pop(gid, None)
+                if pending:
+                    _fail_deployment(store, gid, pending["deployment_id"], "PREFETCH_ERROR", str(e)[:200])
         for gid, g in list(sched.groups.items()):
             if not g.placement:
                 continue
@@ -121,7 +136,92 @@ async def mark_unavailable(app, group_id: str, deployment_id: str, reason: str) 
         store.audit(c, group_id, None, "deployment.unavailable", deployment_id, reason)
     sched.device_lost(group_id)
     sched.set_deployment(group_id, None, None)
+    await unload(app, deployment_id)
+
+
+def _fail_deployment(store: Store, group_id: str, dep_id: str, code: str, detail: str | None = None) -> None:
+    with store.tx() as c:
+        c.execute("UPDATE deployments SET state = 'failed' WHERE id = ?", (dep_id,))
+        store.audit(c, group_id, None, "deployment.failed", dep_id, f"{code}: {detail}" if detail else code)
+
+
+async def load_now(app, group_id: str, dep_id: str, explanation: dict, member_id: str | None) -> dict:
+    """Open tunnels, load the backend, and make the deployment current. Marks it failed on error."""
+    store = app.state.store
+    try:
+        await open_tunnels(app, store, dep_id, explanation)
+        loaded = await app.state.runtime.load_deployment(dep_id, explanation)
+    except RuntimeFailure as e:
+        await run_in_threadpool(app.state.tunnels.close, dep_id)
+        _fail_deployment(store, group_id, dep_id, e.code)
+        raise
+    with store.tx() as c:
+        c.execute("UPDATE deployments SET state = 'ready' WHERE id = ?", (dep_id,))
+        store.audit(c, group_id, member_id, "deployment.ready", dep_id)
+    app.state.scheduler.set_deployment(group_id, dep_id, explanation)
+    return loaded
+
+
+def _prefetch_progress(store: Store, pending: dict) -> list[dict]:
+    out = []
+    for device_id, man in pending["manifests"].items():
+        d = store.one("SELECT name, capabilities FROM devices WHERE id = ?", (device_id,))
+        rep_ = json.loads(d["capabilities"]).get("prefetch") if d else None
+        if rep_ and rep_["deployment_id"] != pending["deployment_id"]:
+            rep_ = None
+        state = "ready" if not man["tensors"] else (rep_["state"] if rep_ else "waiting")
+        out.append({"device_id": device_id, "name": d["name"] if d else None, "state": state,
+                    "bytes_done": rep_["bytes_done"] if rep_ else 0, "bytes_total": man["bytes_prefetch"],
+                    "bytes_stage": man["bytes_stage"], "error": rep_.get("error") if rep_ else None})
+    return out
+
+
+async def _advance_prefetch(app, group_id: str) -> None:
+    """Load once every device reports its partition verified; fail on a device error or timeout."""
+    store, pending = app.state.store, app.state.prefetch[group_id]
+    progress = _prefetch_progress(store, pending)
+    failed = [p for p in progress if p["state"] == "failed"]
+    timed_out = time.monotonic() - pending["started"] > app.state.settings.prefetch_timeout_s
+    if failed or timed_out:
+        del app.state.prefetch[group_id]
+        detail = (f"{failed[0]['name']}: {failed[0]['error']}" if failed else "prefetch timed out")
+        code = "LICENSE_NOT_ACCEPTED" if failed and "license" in (failed[0]["error"] or "") else "PREFETCH_FAILED"
+        _fail_deployment(store, group_id, pending["deployment_id"], code, detail)
+        pending["error"] = {"code": code, "message": detail}
+        app.state.prefetch_errors[group_id] = pending["error"]
+        return
+    if all(p["state"] == "ready" for p in progress):
+        del app.state.prefetch[group_id]
+        try:
+            await load_now(app, group_id, pending["deployment_id"], pending["explanation"], pending["member_id"])
+        except RuntimeFailure as e:
+            app.state.prefetch_errors[group_id] = {"code": e.code, "message": e.message}
+
+
+async def unload(app, deployment_id: str) -> None:
+    """Stop the backend first, then its tunnels, so no stage is left half connected."""
     await app.state.runtime.unload_deployment(deployment_id)
+    await run_in_threadpool(app.state.tunnels.close, deployment_id)
+
+
+async def open_tunnels(app, store: Store, deployment_id: str, explanation: dict) -> None:
+    """Route every remote stage whose agent runs the mTLS tunnel through a loopback forwarder."""
+    local = getattr(app.state.runtime, "local_device", None)
+    for st in explanation["stages"]:
+        if st["name"] == local or not st.get("endpoint"):
+            continue
+        d = store.one("SELECT public_key, capabilities FROM devices WHERE id = ?", (st["device_id"],))
+        worker = json.loads(d["capabilities"]).get("worker") or {}
+        st["transport"] = worker.get("transport", "plaintext")
+        if st["transport"] != "mtls":
+            continue
+        try:
+            await run_in_threadpool(app.state.tunnels.probe, st["endpoint"], d["public_key"])
+            st["rpc_endpoint"] = await run_in_threadpool(app.state.tunnels.open, deployment_id, st["endpoint"],
+                                                         d["public_key"])
+        except TunnelError as e:
+            await run_in_threadpool(app.state.tunnels.close, deployment_id)
+            raise RuntimeFailure("TUNNEL_FAILED", f"{st['name']}: {e}") from None
 
 
 def _branch(row) -> Branch:
@@ -376,6 +476,9 @@ def register(app: FastAPI) -> None:
             raise ApiError(404, "ENROLLMENT_INVALID", "This enrollment code is invalid, expired, or already used.")
         did, token = new_id("dev"), new_secret(32)
         policy = body.policy.model_dump()
+        has_cert = is_certificate(body.public_key)
+        if body.public_key.startswith("-----BEGIN") and not has_cert:
+            raise ApiError(400, "INVALID_DEVICE_KEY", "The device certificate could not be parsed.")
         with store.tx() as c:
             cur = c.execute("UPDATE enrollment_codes SET used_at = ? WHERE id = ? AND used_at IS NULL", (iso(now()), eid))
             if cur.rowcount != 1:
@@ -386,7 +489,9 @@ def register(app: FastAPI) -> None:
                        body.capabilities.model_dump_json(), json.dumps(policy), "active", iso(now()), iso(now())))
             store.audit(c, row["group_id"], row["member_id"], "device.enroll", did)
         return {"device_id": did, "device_token": token, "group_id": row["group_id"],
-                "heartbeat_interval_s": settings.heartbeat_interval_s, "lease_s": 30}
+                "heartbeat_interval_s": settings.heartbeat_interval_s, "lease_s": 30,
+                "coordinator_cert_pem": request.app.state.tunnels.identity.cert_pem,
+                "device_cert_sha256": cert_fingerprint(body.public_key) if has_cert else None}
 
     def _device_by_token(request: Request, device_id: str):
         token = bearer(request)
@@ -406,14 +511,50 @@ def register(app: FastAPI) -> None:
         caps = body.capabilities.model_dump()
         if body.worker:
             caps["worker"] = body.worker.model_dump()
+        if body.prefetch:
+            caps["prefetch"] = body.prefetch.model_dump()
         with S(request).tx() as c:
             c.execute("UPDATE devices SET capabilities = ?, policy = ?, last_seen = ? WHERE id = ?",
                       (json.dumps(caps), json.dumps(policy), iso(now()), device_id))
         g = request.app.state.scheduler.group(d["group_id"])
         stage = next((s for s in (g.placement or {}).get("stages", []) if s["device_id"] == device_id), None)
         public_policy = {k: v for k, v in policy.items() if k != "reported_paused"}
+        pending = request.app.state.prefetch.get(d["group_id"])
+        manifest = pending["manifests"].get(device_id) if pending else None
         return {"policy": public_policy, "policy_rev": d["policy_rev"], "lease_s": 30,
-                "assignment": {"deployment_id": g.deployment_id, "layers": stage["layers"]} if stage else None}
+                "assignment": {"deployment_id": g.deployment_id, "layers": stage["layers"]} if stage else None,
+                "prefetch": {"deployment_id": pending["deployment_id"], **manifest} if manifest else None}
+
+    @app.get("/api/v1/devices/{device_id}/model-file", tags=["devices"])
+    async def model_file(device_id: str, request: Request):
+        """Byte ranges of the model a device is assigned to prefetch (FR 30), for LAN or test use."""
+        d = _device_by_token(request, device_id)
+        pending = request.app.state.prefetch.get(d["group_id"])
+        if not pending or device_id not in pending["manifests"]:
+            raise ApiError(404, "NO_PREFETCH", "This device has no partition to download.")
+        man = pending["manifests"][device_id]
+        allowed = [(t["offset"], t["offset"] + t["nbytes"]) for t in man["tensors"]]
+        m = re.fullmatch(r"bytes=(\d+)-(\d+)", request.headers.get("range", ""))
+        if not m:
+            raise ApiError(416, "RANGE_REQUIRED", "Request one assigned byte range.")
+        start, end = int(m.group(1)), int(m.group(2)) + 1
+        if not any(a <= start and end <= b for a, b in allowed):  # only this device's own ranges
+            raise ApiError(403, "RANGE_NOT_ASSIGNED", "That range is not part of this device's partition.")
+        path = request.app.state.runtime.model_path(man["model"])
+
+        def chunks():
+            with open(path, "rb") as f:
+                f.seek(start)
+                left = end - start
+                while left:
+                    data = f.read(min(left, 1 << 20))
+                    if not data:
+                        return
+                    left -= len(data)
+                    yield data
+        return StreamingResponse(chunks(), status_code=206, media_type="application/octet-stream",
+                                 headers={"Content-Range": f"bytes {start}-{end - 1}/{path.stat().st_size}",
+                                          "Content-Length": str(end - start)})
 
     @app.patch("/api/v1/devices/{device_id}/policy", tags=["devices"])
     async def update_policy(device_id: str, body: PolicyPatch, request: Request, p: Principal = Depends(current)):
@@ -445,7 +586,8 @@ def register(app: FastAPI) -> None:
             state = ("unavailable" if not prof.ready else "paused" if prof.paused else
                      "incompatible" if prof.backend_digest != request.app.state.runtime.backend_digest else "ready")
             out.append({"device_id": prof.device_id, "name": prof.name, "os": prof.os, "arch": prof.arch,
-                        "state": state, "budget_bytes": prof.budget_bytes, "power": prof.power})
+                        "state": state, "budget_bytes": prof.budget_bytes, "power": prof.power,
+                        "worker_running": prof.endpoint is not None})
         return {"devices": out}
 
     # --- Deployments ------------------------------------------------------------------------
@@ -469,25 +611,50 @@ def register(app: FastAPI) -> None:
                            extra={"explanation": explanation})
         dep_id = new_id("dep")
         if g.deployment_id:  # release the previous backend process before loading a new revision
-            await request.app.state.runtime.unload_deployment(g.deployment_id)
+            await unload(request.app, g.deployment_id)
             sched.set_deployment(group_id, None, None)
         with S(request).tx() as c:
             c.execute("UPDATE deployments SET state = 'retired' WHERE group_id = ? AND state != 'retired'", (group_id,))
             c.execute("INSERT INTO deployments VALUES (?,?,?,?,?,?,?)",
                       (dep_id, group_id, model.name, policy.backend_digest, json.dumps(explanation), "loading", iso(now())))
+        request.app.state.prefetch.pop(group_id, None)
+        request.app.state.prefetch_errors.pop(group_id, None)
+        if body.prefetch:
+            return await _start_prefetch(request, group_id, dep_id, model.name, explanation, p.member_id)
         try:
-            loaded = await request.app.state.runtime.load_deployment(dep_id, explanation)
+            loaded = await load_now(request.app, group_id, dep_id, explanation, p.member_id)
         except RuntimeFailure as e:
-            with S(request).tx() as c:
-                c.execute("UPDATE deployments SET state = 'failed' WHERE id = ?", (dep_id,))
-                S(request).audit(c, group_id, p.member_id, "deployment.failed", dep_id, e.code)
             raise ApiError(503 if e.retryable else 409, e.code, e.message, e.retryable)
-        with S(request).tx() as c:
-            c.execute("UPDATE deployments SET state = 'ready' WHERE id = ?", (dep_id,))
-            S(request).audit(c, group_id, p.member_id, "deployment.ready", dep_id)
-        sched.set_deployment(group_id, dep_id, explanation)
         return {"deployment_id": dep_id, "model": model.name, "state": "ready", "loaded": loaded,
                 "explanation": explanation}
+
+    async def _start_prefetch(request: Request, group_id: str, dep_id: str, model_name: str, explanation: dict,
+                              member_id: str):
+        runtime, store = request.app.state.runtime, S(request)
+        meta = MODEL_FILES.get(model_name)
+        if not hasattr(runtime, "stage_tensors") or not meta:
+            _fail_deployment(store, group_id, dep_id, "PREFETCH_UNSUPPORTED")
+            raise ApiError(409, "PREFETCH_UNSUPPORTED", "This backend or model cannot prefetch partitions.")
+        local = getattr(runtime, "local_device", None)
+        url = (f"/api/v1/devices/{{device_id}}/model-file" if settings.model_source == "coordinator"
+               else meta.get("url"))
+        try:
+            manifests = await run_in_threadpool(partition.build, runtime, model_name, meta, explanation["stages"], url)
+        except (RuntimeFailure, ValueError) as e:
+            _fail_deployment(store, group_id, dep_id, "PREFETCH_UNSUPPORTED", str(e))
+            raise ApiError(409, "PREFETCH_UNSUPPORTED", getattr(e, "message", str(e)))
+        remote = {st["device_id"] for st in explanation["stages"] if st["name"] != local}
+        manifests = {k: {**v, "url": v["url"].replace("{device_id}", k)} for k, v in manifests.items() if k in remote}
+        with store.tx() as c:
+            c.execute("UPDATE deployments SET state = 'preparing' WHERE id = ?", (dep_id,))
+            store.audit(c, group_id, member_id, "deployment.prefetch", dep_id)
+        request.app.state.prefetch[group_id] = {"deployment_id": dep_id, "explanation": explanation,
+                                                "manifests": manifests, "member_id": member_id,
+                                                "started": time.monotonic()}
+        summary = [{"device_id": k, "tensors": len(v["tensors"]), "bytes_prefetch": v["bytes_prefetch"],
+                    "bytes_stage": v["bytes_stage"]} for k, v in manifests.items()]
+        return JSONResponse({"deployment_id": dep_id, "model": model_name, "state": "preparing",
+                             "prefetch": summary, "explanation": explanation}, status_code=202)
 
     @app.get("/api/v1/groups/{group_id}/deployment", tags=["deployments"])
     async def get_deployment(group_id: str, request: Request, p: Principal = Depends(current)):
@@ -497,6 +664,12 @@ def register(app: FastAPI) -> None:
         if not row:
             return {"state": "unavailable", "deployment_id": None}
         out = {"deployment_id": row["id"], "model": row["model"], "state": row["state"]}
+        pending = request.app.state.prefetch.get(group_id)
+        if pending and pending["deployment_id"] == row["id"]:
+            out["prefetch"] = _prefetch_progress(S(request), pending)
+        err = request.app.state.prefetch_errors.get(group_id)
+        if err and row["state"] == "failed":
+            out["error"] = err
         if p.is_admin:
             out["explanation"] = json.loads(row["placement"])
         return out

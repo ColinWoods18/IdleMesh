@@ -250,6 +250,11 @@
             "title": "Model",
             "type": "string"
           },
+          "prefetch": {
+            "default": false,
+            "title": "Prefetch",
+            "type": "boolean"
+          },
           "require_all": {
             "default": false,
             "title": "Require All",
@@ -284,7 +289,7 @@
             "$ref": "#/components/schemas/Policy"
           },
           "public_key": {
-            "maxLength": 500,
+            "maxLength": 4000,
             "minLength": 1,
             "title": "Public Key",
             "type": "string"
@@ -366,6 +371,16 @@
             "default": false,
             "title": "Paused",
             "type": "boolean"
+          },
+          "prefetch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PrefetchStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "worker": {
             "anyOf": [
@@ -596,6 +611,55 @@
           }
         },
         "title": "PolicyPatch",
+        "type": "object"
+      },
+      "PrefetchStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes_done": {
+            "minimum": 0.0,
+            "title": "Bytes Done",
+            "type": "integer"
+          },
+          "bytes_total": {
+            "minimum": 0.0,
+            "title": "Bytes Total",
+            "type": "integer"
+          },
+          "deployment_id": {
+            "maxLength": 64,
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "state": {
+            "enum": [
+              "fetching",
+              "ready",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "state",
+          "bytes_done",
+          "bytes_total"
+        ],
+        "title": "PrefetchStatus",
         "type": "object"
       },
       "RecoverIn": {
@@ -842,6 +906,15 @@
               "stopped"
             ],
             "title": "State",
+            "type": "string"
+          },
+          "transport": {
+            "default": "plaintext",
+            "enum": [
+              "plaintext",
+              "mtls"
+            ],
+            "title": "Transport",
             "type": "string"
           }
         },
@@ -1352,6 +1425,47 @@
           }
         },
         "summary": "Heartbeat",
+        "tags": [
+          "devices"
+        ]
+      }
+    },
+    "/api/v1/devices/{device_id}/model-file": {
+      "get": {
+        "description": "Byte ranges of the model a device is assigned to prefetch (FR 30), for LAN or test use.",
+        "operationId": "model_file_api_v1_devices__device_id__model_file_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Model File",
         "tags": [
           "devices"
         ]

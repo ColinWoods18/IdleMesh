@@ -36,6 +36,7 @@ MODEL_FILES: dict[str, dict] = {
         "file": "qwen2.5-0.5b-instruct-q8_0.gguf",
         "sha256": "ca59ca7f13d0e15a8cfa77bd17e65d24f6844b554a7b6c12e07a5f89ff76844e",
         "source": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+        "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q8_0.gguf",
         "license": "apache-2.0",
     },
 }

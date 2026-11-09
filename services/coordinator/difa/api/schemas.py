@@ -70,6 +70,15 @@ class WorkerStatus(Strict):
     peak_rss_bytes: int = Field(ge=0)
     cap_kills: int = Field(ge=0)
     last_stop_reason: str | None = Field(default=None, max_length=200)
+    transport: Literal["plaintext", "mtls"] = "plaintext"
+
+
+class PrefetchStatus(Strict):
+    deployment_id: str = Field(max_length=64)
+    state: Literal["fetching", "ready", "failed"]
+    bytes_done: int = Field(ge=0)
+    bytes_total: int = Field(ge=0)
+    error: str | None = Field(default=None, max_length=300)
 
 
 class Capabilities(Strict):
@@ -97,7 +106,7 @@ class Policy(Strict):
 class EnrollIn(Strict):
     code: str = Field(min_length=1, max_length=200)
     name: str = Field(min_length=1, max_length=100)
-    public_key: str = Field(min_length=1, max_length=500)
+    public_key: str = Field(min_length=1, max_length=4000)  # PEM certificate for the worker tunnel
     capabilities: Capabilities
     policy: Policy
 
@@ -106,6 +115,7 @@ class HeartbeatIn(Strict):
     capabilities: Capabilities
     paused: bool = False  # effective local state after the agent applies owner policy
     worker: WorkerStatus | None = None  # present when the agent supervises an inference worker
+    prefetch: PrefetchStatus | None = None  # progress on this device's partition download (FR 30)
 
 
 class PolicyPatch(Strict):
@@ -121,6 +131,7 @@ class PolicyPatch(Strict):
 class DeploymentIn(Strict):
     model: str
     require_all: bool = False
+    prefetch: bool = False  # devices download and verify their own weights before loading (FR 30)
 
 
 class ConversationIn(Strict):

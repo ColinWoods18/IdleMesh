@@ -1,9 +1,12 @@
 //! difa-agent: enrolls a device with a one-time code, then heartbeats with probed capabilities and
-//! the locally enforced contribution state. Prototype transport is HTTPS/JSON with a device token;
-//! the spec's gRPC over mutual TLS replaces it in Phase 2.
+//! the locally enforced contribution state. Prototype control transport is HTTPS/JSON with a device
+//! token; the spec's gRPC over mutual TLS replaces it in Phase 2. The inference data path to a remote
+//! worker already runs over mutual TLS (see tunnel.rs).
 
 mod policy;
+mod prefetch;
 mod probe;
+mod tunnel;
 mod worker;
 
 use clap::{Parser, Subcommand};
@@ -72,6 +75,37 @@ enum Cmd {
         /// Catalog name of the probe model, so the coordinator can convert tokens/s to bandwidth.
         #[arg(long, default_value = "qwen2.5-0.5b-q8")]
         decode_probe_catalog: String,
+        /// Serve the worker to the coordinator over mutual TLS on this address (for example 0.0.0.0:50100).
+        /// The worker itself then stays on loopback.
+        #[arg(long)]
+        tunnel_listen: Option<String>,
+        /// Address the coordinator should dial for the tunnel (for example 192.168.1.20:50100).
+        #[arg(long)]
+        tunnel_advertise: Option<String>,
+        /// Allow the unencrypted llama.cpp worker on a non-loopback address. Isolated lab networks only.
+        #[arg(long, default_value_t = false)]
+        insecure_plaintext_worker: bool,
+        /// Where this device keeps prefetched weights (default: difa-cache next to the state file).
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+        /// Model licenses the owner accepts for download on this device (repeatable, e.g. apache-2.0).
+        #[arg(long = "accept-license")]
+        accept_licenses: Vec<String>,
+    },
+    /// Run only the mTLS tunnel in front of an already running worker (benchmarks and on-device checks).
+    Tunnel {
+        #[arg(long)]
+        listen: String,
+        #[arg(long)]
+        worker_port: u16,
+        /// This device's certificate and key (PEM).
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+        /// The only client certificate to accept (PEM): the coordinator's.
+        #[arg(long)]
+        peer_cert: PathBuf,
     },
     /// Print what this device would report, without contacting a coordinator.
     Probe {
@@ -90,6 +124,14 @@ struct State {
     owner_policy: OwnerPolicy,
     #[serde(default = "default_digest")]
     backend_digest: String,
+    /// Device certificate and key for the worker tunnel, generated at enrollment (key never leaves here).
+    #[serde(default)]
+    tunnel_cert_pem: Option<String>,
+    #[serde(default)]
+    tunnel_key_pem: Option<String>,
+    /// The coordinator's tunnel client certificate, pinned at enrollment.
+    #[serde(default)]
+    coordinator_cert_pem: Option<String>,
 }
 
 fn default_digest() -> String {
@@ -101,6 +143,8 @@ struct HeartbeatReply {
     policy: OwnerPolicy,
     lease_s: u64,
     assignment: Option<serde_json::Value>,
+    #[serde(default)]
+    prefetch: Option<serde_json::Value>,
 }
 
 fn take_probe(simulate: &Option<String>) -> Result<probe::Probe, String> {
@@ -121,6 +165,11 @@ struct RunOptions {
     beats: Option<u64>,
     worker: Option<WorkerConfig>,
     decode_probe: Option<(PathBuf, PathBuf, String)>,
+    /// (listen, advertise) for the mTLS tunnel.
+    tunnel: Option<(String, String)>,
+    insecure_plaintext: bool,
+    cache_dir: PathBuf,
+    licenses: Vec<String>,
 }
 
 fn capabilities(p: &probe::Probe, cap: u64, rtt_ms: f64, digest: &str) -> serde_json::Value {
@@ -143,14 +192,6 @@ fn save_state(path: &Path, state: &State) -> std::io::Result<()> {
     Ok(())
 }
 
-fn placeholder_public_key() -> String {
-    // Stand-in until device key pairs and mTLS land; it identifies the device and is not a secret.
-    use std::io::Read;
-    let mut bytes = [0u8; 16];
-    let _ = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes));
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 fn client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder().timeout(Duration::from_secs(10)).build().expect("http client")
 }
@@ -167,8 +208,9 @@ fn enroll(coordinator: String, code: String, name: String, memory_cap_gb: f64, a
         paused: false,
         warm_hold_minutes: 30,
     };
+    let identity = tunnel::generate_identity(&name)?;
     let body = json!({
-        "code": code, "name": name, "public_key": placeholder_public_key(),
+        "code": code, "name": name, "public_key": identity.cert_pem,
         "capabilities": capabilities(&p, owner_policy.memory_cap_bytes, p.simulated_rtt_ms, &backend_digest),
         "policy": owner_policy,
     });
@@ -187,10 +229,42 @@ fn enroll(coordinator: String, code: String, name: String, memory_cap_gb: f64, a
         simulate,
         owner_policy,
         backend_digest,
+        tunnel_cert_pem: Some(identity.cert_pem),
+        tunnel_key_pem: Some(identity.key_pem),
+        coordinator_cert_pem: reply["coordinator_cert_pem"].as_str().map(str::to_string),
     };
     save_state(&state, &st).map_err(|e| e.to_string())?;
     println!("enrolled device {} as '{}'; state saved to {}", st.device_id, st.name, state.display());
     Ok(())
+}
+
+/// Put the worker behind the mTLS tunnel, or refuse to expose the plaintext worker on a network.
+fn secure_worker(mut w: WorkerConfig, st: &State, opts: &RunOptions) -> Result<WorkerConfig, String> {
+    match &opts.tunnel {
+        Some((listen, advertise)) => {
+            if !tunnel::is_loopback_host(&w.host) {
+                return Err("with --tunnel-listen the worker stays on loopback; remove --worker-host".into());
+            }
+            if advertise.starts_with("0.0.0.0") || advertise.starts_with("[::]") {
+                return Err("set --tunnel-advertise to an address the coordinator can reach".into());
+            }
+            let (Some(cert), Some(key), Some(coord)) = (&st.tunnel_cert_pem, &st.tunnel_key_pem, &st.coordinator_cert_pem)
+            else {
+                return Err("this enrollment has no tunnel certificates; enroll the device again with this agent".into());
+            };
+            let identity = tunnel::Identity { cert_pem: cert.clone(), key_pem: key.clone() };
+            tunnel::spawn(listen, w.port, tunnel::server_config(&identity, coord)?)?;
+            println!("tunnel: mutual TLS on {listen} (advertised {advertise}); worker on 127.0.0.1:{}", w.port);
+            w.advertise = advertise.clone();
+            w.transport = "mtls";
+        }
+        None if !tunnel::is_loopback_host(&w.host) && !opts.insecure_plaintext => {
+            return Err(format!("refusing to expose the unencrypted llama.cpp worker on {}; use --tunnel-listen, or \
+                                --insecure-plaintext-worker on an isolated lab network", w.host));
+        }
+        None => {}
+    }
+    Ok(w)
 }
 
 fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
@@ -219,7 +293,16 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
             }
         }
     });
-    let mut worker = opts.worker.clone().map(Worker::new);
+    let worker_cfg = match opts.worker.clone() {
+        Some(w) => Some(secure_worker(w, &st, &opts)?),
+        None => None,
+    };
+    let mut worker = worker_cfg.map(|mut w| {
+        w.cache_dir = Some(opts.cache_dir.clone());
+        Worker::new(w)
+    });
+    let mut prefetcher = prefetch::Prefetcher::new(opts.cache_dir.clone(), opts.licenses.clone(), prefetch::Source {
+        coordinator: st.coordinator.clone(), device_token: st.device_token.clone() });
     // Stop the worker on SIGTERM or Ctrl-C so no inference process outlives its supervisor.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = stop.clone();
@@ -256,6 +339,9 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
             if let Some(w) = worker.as_mut() {
                 body["worker"] = w.status();
             }
+            if let Some(s) = prefetcher.status() {
+                body["prefetch"] = s.json();
+            }
             let started = Instant::now();
             match http.post(&url).bearer_auth(&st.device_token).json(&body).send() {
                 Ok(resp) if resp.status().is_success() => {
@@ -264,6 +350,9 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
                     effective = merge(&st.owner_policy, &reply.policy);
                     paused = effective_paused(&effective, p.power, &mut battery_hold);
                     lease.renew(Instant::now(), Duration::from_secs(reply.lease_s));
+                    if let Some(line) = reply.prefetch.as_ref().and_then(|m| prefetcher.offer(m)) {
+                        println!("{line}");
+                    }
                     if reply.assignment != assignment {
                         println!("assignment: {}", reply.assignment.as_ref().map_or("none".into(), |a| a.to_string()));
                         assignment = reply.assignment;
@@ -301,12 +390,32 @@ fn main() {
             enroll(coordinator, code, name, memory_cap_gb, allow_battery, state, simulate, backend_digest)
         }
         Cmd::Run { state, beats, worker_bin, worker_host, worker_port, worker_threads, decode_probe_bench,
-                   decode_probe_model, decode_probe_catalog } => {
-            let worker = worker_bin.map(|bin| WorkerConfig { bin, host: worker_host, port: worker_port,
-                                                             threads: worker_threads });
+                   decode_probe_model, decode_probe_catalog, tunnel_listen, tunnel_advertise,
+                   insecure_plaintext_worker, cache_dir, accept_licenses } => {
+            let cache_dir = cache_dir.unwrap_or_else(|| {
+                state.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).join("difa-cache")
+            });
+            let worker = worker_bin.map(|bin| WorkerConfig {
+                bin, advertise: format!("{worker_host}:{worker_port}"), host: worker_host, port: worker_port,
+                threads: worker_threads, transport: "plaintext", cache_dir: None });
             let decode_probe = decode_probe_bench.zip(decode_probe_model).map(|(b, m)| (b, m, decode_probe_catalog));
-            run(state, RunOptions { beats, worker, decode_probe })
+            let tunnel = tunnel_listen.map(|l| (tunnel_advertise.unwrap_or_else(|| l.clone()), l)).map(|(a, l)| (l, a));
+            run(state, RunOptions { beats, worker, decode_probe, tunnel, insecure_plaintext: insecure_plaintext_worker,
+                                    cache_dir, licenses: accept_licenses })
         }
+        Cmd::Tunnel { listen, worker_port, cert, key, peer_cert } => (|| {
+            let read = |p: &PathBuf| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
+            let identity = tunnel::Identity { cert_pem: read(&cert)?, key_pem: read(&key)? };
+            tunnel::spawn(&listen, worker_port, tunnel::server_config(&identity, &read(&peer_cert)?)?)?;
+            println!("tunnel: mutual TLS on {listen} -> 127.0.0.1:{worker_port}");
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = stop.clone();
+            let _ = ctrlc::set_handler(move || flag.store(true, std::sync::atomic::Ordering::SeqCst));
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Ok(())
+        })(),
         Cmd::Probe { simulate } => take_probe(&simulate).map(|p| {
             let caps = capabilities(&p, u64::MAX, p.simulated_rtt_ms, DEFAULT_BACKEND_DIGEST);
             println!("{}", serde_json::to_string_pretty(&caps).unwrap());

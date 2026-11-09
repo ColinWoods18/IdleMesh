@@ -10,6 +10,8 @@ def _env_float(name: str, default: float) -> float:
 @dataclass
 class Settings:
     db_path: str = field(default_factory=lambda: os.environ.get("DIFA_DB", "difa.sqlite3"))
+    # Coordinator tunnel key and certificate; defaults to the database's directory.
+    tunnel_dir: str | None = field(default_factory=lambda: os.environ.get("DIFA_TUNNEL_DIR"))
     # Sessions (spec 6.5)
     session_idle_s: int = 30 * 60
     session_absolute_s: int = 12 * 3600
@@ -34,6 +36,10 @@ class Settings:
     # Device liveness (spec 9.4)
     heartbeat_interval_s: float = 5
     heartbeat_unassign_s: float = 15
+    # Partition prefetch (FR 30): devices fetch their ranges from the model's origin URL, or from this
+    # coordinator ("coordinator"), which suits a LAN or a test.
+    model_source: str = field(default_factory=lambda: os.environ.get("DIFA_MODEL_SOURCE", "origin"))
+    prefetch_timeout_s: float = field(default_factory=lambda: _env_float("DIFA_PREFETCH_TIMEOUT_S", 6 * 3600))
     # Prototype-only knobs
     fake_token_delay_s: float = field(default_factory=lambda: _env_float("DIFA_FAKE_TOKEN_DELAY", 0.02))
     argon2_fast: bool = field(default_factory=lambda: os.environ.get("DIFA_ARGON2_FAST") == "1")

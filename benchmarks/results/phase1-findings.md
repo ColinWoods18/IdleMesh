@@ -106,3 +106,58 @@ interval; hard prevention needs OS limits (cgroups, Job Objects) in Phase 2.
 **Per-backend decode probe.** The agent can time real decoding of the catalog reference model with
 llama-bench (`--decode-probe-bench`, `--decode-probe-model`); the coordinator converts tokens per
 second into effective bandwidth and uses it in planning, recording the source in each stage.
+
+## Round 3: secure worker link and partition prefetch (2026-11-09)
+
+Raw results: `phase1-tunnel-20261109T215057Z.json`, `phase1-prefetch-20261109T215844Z.json`. Same machine
+and model; workers are local CPU processes; network paths come from `netem_relay.py`.
+
+**Remote workers now run behind mutual TLS (interim answer to DEV 08).** The agent generates an ECDSA
+P-256 key and certificate at enrollment and sends the certificate as the device's public key; the
+coordinator returns its own certificate. `difa-agent run --tunnel-listen` keeps the llama.cpp worker on
+loopback and exposes only a TLS 1.3 listener that accepts exactly the pinned coordinator certificate. The
+coordinator opens a loopback forwarder per remote stage, so `llama-server` still only talks to loopback,
+and checks the device certificate byte for byte. Tested: a deployment through the tunnel generates
+normally; clients with no certificate or another certificate are refused before reaching the worker; an
+impostor device at the right address fails the handshake; the agent refuses to expose a plaintext
+worker on a network address unless `--insecure-plaintext-worker` is given.
+
+| Path | Plaintext ms/token | mTLS ms/token | Overhead | Load, plaintext | Load, mTLS |
+|---|---:|---:|---:|---:|---:|
+| Loopback | 7.51 | 8.28 | +0.77 | 0.73 s | 0.92 s |
+| 20 ms RTT | 28.74 | 30.07 | +1.33 | 2.05 s | 2.57 s |
+
+Most of the overhead is the extra loopback hop through the Python forwarder, not the cryptography. At
+internet round trips it is a few percent; a native forwarder would remove most of it.
+
+**Planned and actual layer splits disagreed.** llama.cpp divides `n_layer + 1` slots (the output layer
+counts), so passing layer counts as `--tensor-split` moves boundaries: `-ts 19,5` on this 24-layer model
+puts 20 layers on the first device. The adapter now computes split points halfway between planned
+boundaries (`difa/gguf.py`, checked against llama.cpp's own rule on 1,200 random plans in the unit tests) and compares
+each device's loaded bytes with the plan; a difference above 2 percent fails the deployment.
+
+**llama.cpp's worker can load weights from a local cache, which makes FR 30 practical.** With `-c`, the
+RPC worker looks up a weight tensor by its FNV-1a hash before llama-server sends it, but only for weight
+tensors above 10 MiB. Prefetch (`"prefetch": true` on a deployment) uses this: the coordinator reads the
+GGUF tensor table, works out which byte ranges each device will hold, and sends a manifest with a SHA-256
+per range; the agent fetches those ranges with HTTP Range requests (from the model's origin, or from the
+coordinator on a LAN), verifies them, and stores them under the hash name llama.cpp expects. The
+deployment waits in `preparing` until every device reports its share verified, and fails cleanly if a
+download fails or the owner has not accepted the model license (`--accept-license`).
+
+- Tested end to end: the device downloaded exactly the 138 MiB output-head range, filed it as
+  `c5d93d2d0af14837` (the name llama.cpp itself gave this tensor), and during load the bytes sent to that
+  device dropped below stage size minus that tensor.
+- At 50 Mbps and 20 ms, load time fell from 53.0 s to 30.0 s. The predicted saving (cached bytes over link
+  speed) was 23.1 s; measured 23.05 s.
+- Coverage depends on tensor sizes. In this 0.5B model only the output head is above 10 MiB. In a
+  70B-class model (hidden 8192, 8 KV heads) every attention-query, attention-output and feed-forward
+  tensor is above the threshold and only the key/value projections and norms are not: an estimated 98
+  percent of weight bytes are cacheable, so load over a home link would be dominated by the remaining
+  ~12 MB per layer. To be confirmed on the Test C model's own tensor table.
+
+**Limitations.** The control channel (enrollment, heartbeats, the model-file endpoint) is still plain
+HTTP with bearer tokens, so use it only on a trusted network until it moves to TLS. Certificates have no
+rotation; removing a device stops the coordinator dialling it, but the agent keeps its certificate. On
+Windows the agent's state file (which holds the device key) is not yet restricted to the owner. Prefetch
+does not yet check free disk space against an owner limit.

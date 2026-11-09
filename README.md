@@ -69,10 +69,14 @@ shares, and the adapter refuses a deployment unless llama.cpp's load log shows w
 100 warm requests each and a pre-declared greedy-match acceptance rule; results land in
 `benchmarks/results/`.
 
-Research-only constraints, as the spec requires: llama.cpp RPC is upstream-documented as insecure, so the
-adapter refuses non-loopback RPC endpoints unless explicitly allowed, binds `llama-server` to 127.0.0.1
-with a random API key, and all prompts are synthetic. So far every RPC worker is a CPU process on the
-same Mac; the real HP and VM, and real network paths, are still untested.
+Research-only constraints, as the spec requires: llama.cpp RPC is upstream-documented as insecure, so
+`llama-server` only ever talks to loopback (bound to 127.0.0.1 with a random API key), and all prompts are
+synthetic. A remote worker is reached through a **mutual-TLS tunnel** (`difa.transport` on the
+coordinator, `difa-agent run --tunnel-listen` on the device): the worker itself stays on the device's
+loopback, both ends pin certificates exchanged at enrollment, and the agent refuses to expose a plaintext
+worker on a network address. Devices can **prefetch** their share of the model before a deployment loads
+(`"prefetch": true`): the coordinator sends each agent the exact byte ranges it will hold with a SHA-256
+each, and the agent fills llama.cpp's weight cache so those weights never cross the link at load time.
 
 One-time setup (pinned build and model, outside iCloud):
 
@@ -92,6 +96,40 @@ mkdir -p ~/.cache/difa-phase1/models && curl -L -o ~/.cache/difa-phase1/models/q
 ~/.venvs/difa/bin/python benchmarks/phase1_llamacpp.py
 ```
 
+### Connecting the real HP and Ubuntu VM
+
+On the Mac, start the coordinator on its LAN address with the llama.cpp adapter, sign in at
+http://127.0.0.1:8765/docs, create the group, and create one enrollment code per device:
+
+```bash
+~/.venvs/difa/bin/python scripts/dev_server.py --fresh --llamacpp --host 0.0.0.0 --model-source coordinator
+```
+
+On each device, build llama.cpp v0.9.0 with RPC (CPU is enough) and the agent, then enroll and run. The
+example uses Linux paths; on Windows build the same targets and pass the `.exe` paths. Replace the
+addresses with the Mac's and the device's own LAN addresses.
+
+```bash
+git clone --depth 1 --branch v0.9.0 https://github.com/ggml-org/llama.cpp.git ~/difa/llama.cpp && cd ~/difa/llama.cpp && cmake -B build -DGGML_RPC=ON -DLLAMA_CURL=OFF && cmake --build build -j --target ggml-rpc-server llama-bench
+```
+
+```bash
+cd agents/device && cargo build --release
+```
+
+```bash
+./target/release/difa-agent enroll --coordinator http://MAC_LAN_IP:8765 --code CODE --name "Ubuntu VM" --memory-cap-gb 8 --backend-digest llama.cpp-v0.9.0 --state ~/difa/agent.json
+```
+
+```bash
+./target/release/difa-agent run --state ~/difa/agent.json --worker-bin ~/difa/llama.cpp/build/bin/ggml-rpc-server --worker-threads 4 --tunnel-listen 0.0.0.0:50100 --tunnel-advertise DEVICE_LAN_IP:50100 --accept-license apache-2.0
+```
+
+Open only the tunnel port (50100 here) to the Mac in the device's firewall; the worker port is never
+exposed. Then deploy with `{"model": "qwen2.5-0.5b-q8", "require_all": true, "prefetch": true}` and
+watch `GET /api/v1/groups/{group_id}/deployment` move from `preparing` to `ready`. On the HP, follow
+your workplace's policy on installing software and opening ports.
+
 Full write-up with numbers: [benchmarks/results/phase1-findings.md](benchmarks/results/phase1-findings.md).
 Findings so far that change the design:
 
@@ -109,6 +147,14 @@ Findings so far that change the design:
   0.62 MB of RPC traffic per remote stage, so home upload bandwidth and latency will dominate WAN speed.
 - `benchmarks/netem_relay.py` simulates delay and bandwidth caps on loopback; `benchmarks/phase1_latency.py`
   runs the calibration, hold-out validation, delay sweep, and bandwidth sweep.
+- Passing layer counts as `--tensor-split` moves boundaries, because llama.cpp divides layers plus the output
+  slot. The adapter now computes exact split points (`difa/gguf.py`) and checks each device's loaded bytes
+  against the plan.
+- The mutual-TLS tunnel costs about 0.8 ms per token on loopback and 1.3 ms at 20 ms round trip
+  (`benchmarks/phase1_tunnel.py`).
+- llama.cpp's worker cache only covers weight tensors above 10 MiB. Prefetching them removed the expected
+  load time exactly (23.1 s of 53 s at 50 Mbps, `benchmarks/phase1_prefetch.py`); for a 70B-class model
+  that is roughly 98% of the weight bytes.
 
 ## Spec coverage
 
@@ -121,7 +167,8 @@ spec 10 device-loss handling.
 
 Prototype deviations to close before Phase 2 sign-off:
 
-- Agent transport is HTTPS/JSON with a device token, not gRPC over mutual TLS. Device public keys are placeholders.
+- Agent control transport is HTTP/JSON with a device token, not gRPC over mutual TLS (the inference data path
+  to remote workers is already mutual TLS). Certificates are pinned with no rotation or expiry handling yet.
 - Stored content is not yet encrypted with the group data key; no-history mode, retention purge jobs,
   and backups are not implemented.
 - The client-disconnect grace window, deadline-aware rejection (FR 32), validated profiles (FR 33),

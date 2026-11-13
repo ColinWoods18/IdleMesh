@@ -156,7 +156,8 @@ async def load_now(app, group_id: str, dep_id: str, explanation: dict, member_id
         _fail_deployment(store, group_id, dep_id, e.code)
         raise
     with store.tx() as c:
-        c.execute("UPDATE deployments SET state = 'ready' WHERE id = ?", (dep_id,))
+        # Store the plan as loaded (transport and loopback forwarder per stage), not as first planned.
+        c.execute("UPDATE deployments SET state = 'ready', placement = ? WHERE id = ?", (json.dumps(explanation), dep_id))
         store.audit(c, group_id, member_id, "deployment.ready", dep_id)
     app.state.scheduler.set_deployment(group_id, dep_id, explanation)
     return loaded

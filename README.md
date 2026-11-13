@@ -98,6 +98,12 @@ mkdir -p ~/.cache/difa-phase1/models && curl -L -o ~/.cache/difa-phase1/models/q
 
 ### Connecting the real HP and Ubuntu VM
 
+Step-by-step guides for the three-machine test, including every install, are in `docs/testing/`:
+[three_machine_test.md](docs/testing/three_machine_test.md) (start here),
+[mac_test_setup.md](docs/testing/mac_test_setup.md), [windows_test_setup.md](docs/testing/windows_test_setup.md),
+and [ubuntu_test_setup.md](docs/testing/ubuntu_test_setup.md). `scripts/pilot.py` drives the coordinator
+for the test. The summary below is the short version.
+
 On the Mac, start the coordinator on its LAN address with the llama.cpp adapter, sign in at
 http://127.0.0.1:8765/docs, create the group, and create one enrollment code per device:
 

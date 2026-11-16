@@ -1,0 +1,239 @@
+{
+  "benchmark": "pilot-3machine",
+  "utc": "20261116T213110Z",
+  "deployment": {
+    "deployment_id": "dep_c8dcec727fa62772",
+    "model": "qwen2.5-0.5b-q8",
+    "state": "ready",
+    "explanation": {
+      "pipeline_version": "placement-pipeline/1",
+      "model": {
+        "name": "qwen2.5-0.5b-q8",
+        "revision": "Qwen/Qwen2.5-0.5B-Instruct-GGUF@q8_0",
+        "class": "dense",
+        "layers": 24,
+        "weights_bytes": 380507256,
+        "synthetic": false
+      },
+      "policy": {
+        "backend_digest": "llama.cpp-v0.9.0",
+        "headroom_fraction": 0.1,
+        "active_sequences": 1,
+        "require_all": true,
+        "local_device": "Mac Studio",
+        "backend_cost": {
+          "name": "llama.cpp-v0.9.0-rpc",
+          "first_remote_ms": 3.58,
+          "extra_remote_ms": 0.74,
+          "round_trips_per_token": 1.02,
+          "bytes_per_token_per_remote": 620000.0
+        },
+        "weights": {
+          "bandwidth": 0.4,
+          "latency": 0.3,
+          "power": 0.2,
+          "stability": 0.1
+        }
+      },
+      "filtered_out": [],
+      "scores": [
+        {
+          "device_id": "dev_88c91ca6ebf338cd",
+          "total": 0.9798,
+          "components": {
+            "bandwidth": 1.0,
+            "latency": 0.9328,
+            "power": 1.0,
+            "stability": 1.0
+          }
+        },
+        {
+          "device_id": "dev_045c5d1987a72983",
+          "total": 0.5514,
+          "components": {
+            "bandwidth": 0.0488,
+            "latency": 0.7728,
+            "power": 1.0,
+            "stability": 1.0
+          }
+        },
+        {
+          "device_id": "dev_8067e945fdd624be",
+          "total": 0.4406,
+          "components": {
+            "bandwidth": 0.487,
+            "latency": 0.4859,
+            "power": 0.0,
+            "stability": 1.0
+          }
+        }
+      ],
+      "single_device_fit": [
+        "dev_88c91ca6ebf338cd",
+        "dev_045c5d1987a72983",
+        "dev_8067e945fdd624be"
+      ],
+      "feasible": true,
+      "stages": [
+        {
+          "device_id": "dev_8067e945fdd624be",
+          "name": "HP EliteBook",
+          "layers": [
+            0,
+            1
+          ],
+          "holds_output_head": false,
+          "endpoint": "10.10.150.105:50100",
+          "bandwidth_gbps": 78.8,
+          "bandwidth_source": "reported",
+          "weights_bytes": 15854469,
+          "kv_bytes": 2097152,
+          "runtime_bytes": 67108864,
+          "headroom_bytes": 800000000,
+          "budget_bytes": 8000000000,
+          "margin_bytes": 7114939515,
+          "est_compute_ms": 0.2,
+          "rtt_ms": 52.9,
+          "est_network_ms": 53.96,
+          "transport": "mtls",
+          "rpc_endpoint": "127.0.0.1:59396"
+        },
+        {
+          "device_id": "dev_045c5d1987a72983",
+          "name": "Ubuntu VM",
+          "layers": [
+            1,
+            2
+          ],
+          "holds_output_head": false,
+          "endpoint": "10.10.132.197:50100",
+          "bandwidth_gbps": 7.9,
+          "bandwidth_source": "reported",
+          "weights_bytes": 15854469,
+          "kv_bytes": 2097152,
+          "runtime_bytes": 67108864,
+          "headroom_bytes": 600000000,
+          "budget_bytes": 6000000000,
+          "margin_bytes": 5314939515,
+          "est_compute_ms": 2.01,
+          "rtt_ms": 14.7,
+          "est_network_ms": 14.99,
+          "transport": "mtls",
+          "rpc_endpoint": "127.0.0.1:59398"
+        },
+        {
+          "device_id": "dev_88c91ca6ebf338cd",
+          "name": "Mac Studio",
+          "layers": [
+            2,
+            24
+          ],
+          "holds_output_head": true,
+          "endpoint": null,
+          "bandwidth_gbps": 161.8,
+          "bandwidth_source": "decode_probe",
+          "weights_bytes": 493438891,
+          "kv_bytes": 46137344,
+          "runtime_bytes": 67108864,
+          "headroom_bytes": 6400000000,
+          "budget_bytes": 64000000000,
+          "margin_bytes": 56993314901,
+          "est_compute_ms": 3.05,
+          "rtt_ms": 3.6,
+          "est_network_ms": 0.0
+        }
+      ],
+      "reservation_bytes": {
+        "dev_8067e945fdd624be": 2097152,
+        "dev_045c5d1987a72983": 2097152,
+        "dev_88c91ca6ebf338cd": 46137344
+      },
+      "latency_budget": {
+        "compute_ms": 5.26,
+        "network_ms": 68.95,
+        "backend_overhead_ms": 4.32,
+        "remote_stages": 2,
+        "per_token_ms": 78.53,
+        "tokens_per_s": 12.73,
+        "dominant_stage": "dev_8067e945fdd624be",
+        "backend_cost": {
+          "name": "llama.cpp-v0.9.0-rpc",
+          "first_remote_ms": 3.58,
+          "extra_remote_ms": 0.74,
+          "round_trips_per_token": 1.02,
+          "bytes_per_token_per_remote": 620000.0
+        },
+        "basis": "weights/effective bandwidth + fitted backend overhead + round trips and per-token traffic per remote stage; link bandwidth term omitted where unmeasured"
+      },
+      "capacity_basis": "fits a single eligible device budget"
+    }
+  },
+  "summary": {
+    "requests": 10,
+    "completed": 10,
+    "median_elapsed_s": 2.494,
+    "median_tokens_per_s": 15.53
+  },
+  "runs": [
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.527,
+      "completion_tokens": 60
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.054,
+      "completion_tokens": 12
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 4.966,
+      "completion_tokens": 98
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.46,
+      "completion_tokens": 20
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.737,
+      "completion_tokens": 60
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.053,
+      "completion_tokens": 12
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 5.386,
+      "completion_tokens": 98
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.259,
+      "completion_tokens": 20
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.955,
+      "completion_tokens": 60
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.051,
+      "completion_tokens": 12
+    }
+  ]
+}

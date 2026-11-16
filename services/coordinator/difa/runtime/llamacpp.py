@@ -187,11 +187,30 @@ class LlamaCppRuntime:
     def partition_map(self, deployment_id: str) -> list[dict]:
         return self._deployments[deployment_id]["partition_map"]
 
-    async def unload_deployment(self, deployment_id: str) -> None:
+    async def unload_deployment(self, deployment_id: str, worker_lost: str | None = None) -> None:
+        """Stop llama-server. After a drain, a remote worker is already gone, and llama-server's normal
+        cleanup would abort on the dead RPC connection (ggml-rpc.cpp: "Remote RPC server crashed"). Its
+        state is all in memory, so stop it without cleanup instead and say why in its log; any abort
+        that still appears in a log then means a real crash."""
         dep = self._deployments.pop(deployment_id, None)
-        if dep:
-            dep["proc"].terminate()
-            await dep["client"].aclose()
+        if not dep:
+            return
+        proc = dep["proc"]
+        note = (f"difa: drain ({worker_lost}); stopping llama-server without cleanup because a remote worker "
+                f"has already left" if worker_lost else "difa: planned unload; stopping llama-server")
+        try:
+            with open(dep["log"], "a") as f:
+                f.write(f"\n{note}\n")
+        except OSError:
+            pass
+        if proc.poll() is None:
+            proc.kill() if worker_lost else proc.terminate()
+            try:
+                await asyncio.to_thread(proc.wait, 10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                await asyncio.to_thread(proc.wait)
+        await dep["client"].aclose()
 
     async def health(self) -> dict:
         return {"ok": all(d["proc"].poll() is None for d in self._deployments.values()),

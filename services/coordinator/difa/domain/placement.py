@@ -31,6 +31,7 @@ class DeviceProfile:
     link_mbps: float | None = None   # measured path bandwidth to the coordinator, if known
     bandwidth_source: str = "reported"   # "decode_probe" when derived from timed decoding (FR 06)
     not_ready_reason: str | None = None
+    rtt_source: str = "heartbeat"        # "tunnel" when timed through the worker tunnel by the coordinator
 
 
 @dataclass(frozen=True)
@@ -188,41 +189,70 @@ def plan(devices: list[DeviceProfile], model: ModelSpec, policy: PlacementPolicy
             "headroom_bytes": d.budget_bytes - int(d.budget_bytes * (1 - policy.headroom_fraction)),
             "budget_bytes": d.budget_bytes, "margin_bytes": _usable_bytes(d, model, policy) + model.runtime_overhead_bytes - need,
             "est_compute_ms": round(weights / (d.mem_bandwidth_gbps * GB) * 1000, 2),
-            "rtt_ms": d.rtt_ms,
+            "rtt_ms": d.rtt_ms, "rtt_source": d.rtt_source, "link_mbps": d.link_mbps,
         })
         start += n
     assert start == model.layers and all(s["margin_bytes"] >= 0 for s in stages) and per_layer > 0
 
-    # Per-token latency (spec 7.2): compute from weights and effective bandwidth, plus the backend's fixed
-    # transport overhead, plus round trips and per-token traffic for every remote stage.
-    cost = policy.backend_cost
     local = policy.local_device or stages[-1]["name"]
-    remote = [(s, d) for s, d in zip(stages, [d for d, _ in order]) if s["name"] != local]
-    for s, d in remote:
-        s["est_network_ms"] = round(cost.round_trips_per_token * d.rtt_ms + (
-            cost.bytes_per_token_per_remote * 8 / (d.link_mbps * 1e6) * 1000 if d.link_mbps else 0), 2)
-    for s in stages:
-        s.setdefault("est_network_ms", 0.0)
-    compute_ms = sum(s["est_compute_ms"] for s in stages)
-    network_ms = sum(s["est_network_ms"] for s in stages)
-    overhead_ms = (cost.first_remote_ms + cost.extra_remote_ms * (len(remote) - 1)) if remote else 0.0
-    token_ms = compute_ms + network_ms + overhead_ms
     explanation.update({
         "feasible": True,
         "stages": stages,
         "reservation_bytes": {s["device_id"]: s["kv_bytes"] for s in stages},
-        "latency_budget": {
-            "compute_ms": round(compute_ms, 2), "network_ms": round(network_ms, 2),
-            "backend_overhead_ms": round(overhead_ms, 2), "remote_stages": len(remote),
-            "per_token_ms": round(token_ms, 2), "tokens_per_s": round(1000 / token_ms, 2) if token_ms else None,
-            "dominant_stage": max(stages, key=lambda s: s["est_compute_ms"] + s["est_network_ms"])["device_id"],
-            "backend_cost": asdict(cost),
-            "basis": ("weights/effective bandwidth + fitted backend overhead + round trips and per-token "
-                      "traffic per remote stage; link bandwidth term omitted where unmeasured"),
-        },
+        "latency_budget": latency_budget(stages, local, policy.backend_cost),
         "capacity_basis": ("fits a single eligible device budget" if explanation["single_device_fit"]
                            else "exceeds every eligible device budget (owner-budget capacity, Test C)"),
     })
+    return explanation
+
+
+def latency_budget(stages: list[dict], local: str, cost: BackendCost) -> dict:
+    """Per-token latency (spec 7.2): compute from weights and effective bandwidth, plus the backend's fixed
+    transport overhead, plus round trips and per-token traffic for every remote stage. Sets each stage's
+    `est_network_ms` from its `rtt_ms` and optional `link_mbps`."""
+    remote = [s for s in stages if s["name"] != local]
+    for s in stages:
+        s["est_network_ms"] = 0.0
+    for s in remote:
+        link = s.get("link_mbps")
+        s["est_network_ms"] = round(cost.round_trips_per_token * s["rtt_ms"] + (
+            cost.bytes_per_token_per_remote * 8 / (link * 1e6) * 1000 if link else 0), 2)
+    compute_ms = sum(s["est_compute_ms"] for s in stages)
+    network_ms = sum(s["est_network_ms"] for s in stages)
+    overhead_ms = (cost.first_remote_ms + cost.extra_remote_ms * (len(remote) - 1)) if remote else 0.0
+    token_ms = compute_ms + network_ms + overhead_ms
+    sources = sorted({s.get("rtt_source", "heartbeat") for s in remote})
+    return {
+        "compute_ms": round(compute_ms, 2), "network_ms": round(network_ms, 2),
+        "backend_overhead_ms": round(overhead_ms, 2), "remote_stages": len(remote),
+        "per_token_ms": round(token_ms, 2), "tokens_per_s": round(1000 / token_ms, 2) if token_ms else None,
+        "dominant_stage": max(stages, key=lambda s: s["est_compute_ms"] + s["est_network_ms"])["device_id"],
+        "rtt_source": "+".join(sources) if sources else None,
+        "backend_cost": asdict(cost),
+        "basis": ("weights/effective bandwidth + fitted backend overhead + round trips and per-token "
+                  "traffic per remote stage; link bandwidth term omitted where unmeasured"),
+    }
+
+
+def reestimate_with_path_rtt(explanation: dict, measured: dict[str, dict], cost: BackendCost | None = None) -> dict:
+    """Replace heartbeat RTTs with round trips timed through the worker tunnel, and recompute the budget.
+
+    Heartbeat RTT includes HTTP and coordinator request handling, so it overstates the network path a
+    token takes (Phase 1 Round 4: 15-18 ms by heartbeat against 9 ms by ping to the same VM). The
+    prediction made at planning time is kept as `planned_latency_budget` for comparison.
+    """
+    if not measured:
+        return explanation
+    old = explanation["latency_budget"]
+    cost = cost or BackendCost(**old["backend_cost"])
+    explanation.setdefault("planned_latency_budget", {k: v for k, v in old.items() if k != "backend_cost"})
+    for s in explanation["stages"]:
+        m = measured.get(s["device_id"])
+        if m:
+            s.setdefault("planned_rtt_ms", s["rtt_ms"])
+            s["rtt_ms"], s["rtt_source"], s["rtt_measurement"] = m["mean_ms"], "tunnel", m
+    local = explanation["policy"].get("local_device") or explanation["stages"][-1]["name"]
+    explanation["latency_budget"] = latency_budget(explanation["stages"], local, cost)
     return explanation
 
 

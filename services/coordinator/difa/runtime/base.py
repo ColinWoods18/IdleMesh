@@ -28,7 +28,8 @@ class RuntimeAdapter(Protocol):
     async def load_deployment(self, deployment_id: str, placement: dict) -> dict:
         """Returns an immutable manifest digest and the actual partition map."""
 
-    async def unload_deployment(self, deployment_id: str) -> None: ...
+    async def unload_deployment(self, deployment_id: str, worker_lost: str | None = None) -> None:
+        """Stop serving. `worker_lost` names why a stage is already gone (drain), if it is."""
 
     def generate_stream(self, deployment_id: str, messages: list[dict], max_tokens: int, seed: int | None,
                         cancel: asyncio.Event, result: Generation) -> AsyncIterator[str]: ...

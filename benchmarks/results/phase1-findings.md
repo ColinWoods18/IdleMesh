@@ -8,6 +8,7 @@ Raw results: `phase1-llamacpp-20261105T222651Z.json` and `.md` (100 warm request
 **Scope warning.** Every "remote" worker here is a CPU-only `ggml-rpc-server` process on the same Mac,
 over loopback. Nothing below measures the HP laptop, the Ubuntu VM, or an internet path, and the
 0.5B model fits every device, so this is a cooperation (Test A) result, not a capacity result.
+Round 4 (below) repeats Test A on the real HP and Ubuntu VM over the LAN.
 
 ## Results
 
@@ -161,3 +162,93 @@ HTTP with bearer tokens, so use it only on a trusted network until it moves to T
 rotation; removing a device stops the coordinator dialling it, but the agent keeps its certificate. On
 Windows the agent's state file (which holds the device key) is not yet restricted to the owner. Prefetch
 does not yet check free disk space against an owner limit.
+
+## Round 4: Test A on three physical machines (2026-11-16)
+
+Raw results: `pilot-3machine-20261116T212640Z.json`, `pilot-3machine-20261116T213110Z.json`,
+`pilot-3machine-20261116T213925Z.json`, the operator notes in `note.md`, and llama-server's own timings from
+the coordinator's adapter logs (`dep_c8dcec727fa62772`, `dep_de9220e550f0fb71`). Same model, llama.cpp
+v0.9.0 on all three machines, run with `docs/testing/three_machine_test.md`. Synthetic prompts only.
+Network: Wi-Fi (reported by the operator after the run).
+
+| Stage | Device | Layers | Weights | Transport | Heartbeat RTT |
+|---|---|---|---:|---|---:|
+| 1 | HP EliteBook (Windows, CPU), 10.10.150.105 | 0 | 15.1 MiB | mTLS | 42.4–52.9 ms |
+| 2 | Ubuntu VM (CPU), 10.10.132.197 | 1 | 15.1 MiB | mTLS | 14.7–18.5 ms |
+| 3 | Mac Studio (Metal), coordinator | 2–23 + output | 470.6 MiB | local | 3.4–3.6 ms |
+
+**The system works end to end on real devices.** Across two deployments and three benches, 50 of 50
+requests completed with no errors. Both remote stages ran through the mutual-TLS tunnel. Loaded bytes
+per device matched the plan, so there was no `PARTITION_MISMATCH`. A deployment was ready 8.1 s after
+`pilot deploy`. Prefetch reported 100% at once: no tensor on the HP or the VM is above llama.cpp's
+10 MiB cache threshold, as predicted in Round 3.
+
+**Speed is set entirely by the network.** One device alone (Mac, Metal) decodes at 305 tokens/s. The
+three-machine split decodes at about 20.
+
+| Deployment | Predicted ms/token | Measured ms/token (llama.cpp, token-weighted) | Median per request (p10–p90) | Prediction error |
+|---|---:|---:|---:|---:|
+| `dep_c8dcec727fa62772` (benches 1–2) | 78.5 | 49.7 | 48.3 (43.3–68.1) | +58% |
+| `dep_de9220e550f0fb71` (bench 3) | 71.7 | 47.0 | 44.9 (36.4–52.1) | +53% |
+
+The bench's own end-to-end figure (median 15–16 tokens/s) also includes prompt processing and polling.
+A fit of elapsed time against tokens gives a fixed cost of 0.33–0.64 s per request, plus 50–51 ms per
+token. Prompt processing ran at 7.5–9.1 ms per prompt token, against 0.07 ms on the Mac alone. Each
+prompt chunk pays the same round trips, so short prompts are also network-bound.
+
+**The latency model misses the spec 7.2 target (within 30%) on real links, but on the safe side.** It
+predicts too slow by 53–58%. The fitted constants from Round 2 are not the cause: the round-trip input is.
+
+- The planner takes each remote stage's RTT from the agent's heartbeat. That figure is an HTTP request
+  to the coordinator, so it includes connection setup and the coordinator's request handling as well
+  as the network.
+- For the VM, the heartbeat reported 14.7–18.5 ms, but ICMP ping from the Mac measured 9.2 ms average
+  (7.0–12.7 ms). The HP did not answer ping (Windows blocks it by default), so its true RTT was not
+  measured.
+- The heartbeat RTTs sum to 57–68 ms, which is more than the whole measured token time.
+- Taking the Mac's compute (5.3 ms) and the fitted backend overhead (4.3 ms) out of the measured 47 ms
+  leaves about 37 ms per token for the two remote round trips. That is consistent with roughly 9 ms
+  for the VM and 25–30 ms for the HP.
+
+Fix: measure RTT from the coordinator over the established tunnel (for example, a small echo on the
+tunnel, or TCP connect time to the advertised endpoint), and use that in the latency model in place of
+heartbeat RTT. Keep heartbeat RTT for liveness only. Then re-run this test to check the 30% target.
+
+**The links themselves are slow, as expected on Wi-Fi.** The run was over Wi-Fi, and the HP and the VM
+are on different subnets (10.10.150.0 and 10.10.132.0), so traffic to them is also routed. A switched
+wired LAN typically gives 1 ms or less, against the measured 9 ms to the VM. The HP is the dominant
+stage. Running it wired, on the Mac's subnet, would likely roughly double decode speed. Wi-Fi does not
+excuse the prediction miss: spec 7.2 asks the prediction to match the trace on whatever path is used,
+and Wi-Fi is the most likely household path. It does widen the spread of per-token times (p90 up to
+68 ms), which is why the round-trip input now uses a mean over back-to-back samples rather than a single
+heartbeat.
+
+**Shutdown aborts llama-server after a worker leaves.** In two deployments (`dep_6847a20f5bea35a3`,
+`dep_c8dcec727fa62772`), llama-server printed "Remote RPC server crashed or returned malformed response"
+(`ggml-rpc.cpp:685`) and aborted. Both times this happened during "cleaning up before exit", after all
+requests had completed. That fits the owner-control drain path (4a–4d): the device stops its worker
+first, then the coordinator unloads. Results are not affected, and the deployment drains as designed.
+However, every drain leaves a crash trace, which will hide real crashes in the logs. Options:
+- stop llama-server before tunnels close on a planned unload;
+- classify an abort after "cleaning up before exit" as an expected drain in the adapter log.
+
+The owner-control checks (4a–4f) were run, but their outcomes were not recorded in `note.md`. The logs
+show only that drains happened.
+
+**Changes made after this round (2026-11-16, not yet run on the physical machines).**
+- Just before loading, the coordinator times 16 back-to-back llama.cpp RPC round trips through each
+  remote stage's tunnel (HELLO, then DEVICE_COUNT). It replaces the heartbeat RTT with the mean of those
+  samples and predicts again. The plan keeps the heartbeat-based prediction as `planned_latency_budget`
+  and records each stage's `rtt_source`. The measurement is reused for planning for 15 minutes. If it
+  fails, the deployment still loads, using the heartbeat value for that stage.
+- `pilot bench` fits time per token across requests, compares it with the as-loaded prediction, and
+  reports `prediction_error_pct` and `within_30pct`. `--network` records how each machine is connected.
+- On a drain, the coordinator now stops llama-server without its RPC cleanup and writes
+  `difa: drain (reason)` to the adapter log. This replaces the abort trace that appeared before. The
+  integration test now checks that the log contains no abort after a cap drain.
+
+**Still open after this round.**
+- Re-run the three-machine test with the tunnel RTT change to check the 30% target on Wi-Fi.
+- If possible, also run it with the HP wired, to compare.
+- Record the 4a–4f results.
+- The capacity tests (B and C) need the larger model, which is a 58 GB download and needs approval.

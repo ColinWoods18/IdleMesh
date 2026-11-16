@@ -73,6 +73,13 @@ def test_deployment_runs_through_the_tunnel_and_refuses_strangers(tmp_path):
                 assert hp["transport"] == "mtls" and hp["endpoint"] == f"127.0.0.1:{tport}"
                 assert hp["rpc_endpoint"].startswith("127.0.0.1:") and hp["rpc_endpoint"] != hp["endpoint"]
                 assert vm["transport"] == "plaintext" and "rpc_endpoint" not in vm
+                # The HP's round trip was timed through its tunnel with real RPC commands before loading.
+                assert hp["rtt_source"] == "tunnel" and hp["rtt_measurement"]["samples"] == 16, hp
+                assert hp["rtt_ms"] == hp["rtt_measurement"]["mean_ms"] and "planned_rtt_ms" in hp
+                assert vm["rtt_source"] == "heartbeat" and "rtt_measurement" not in vm
+                expl = body["explanation"]
+                assert expl["planned_latency_budget"]["rtt_source"] == "heartbeat"
+                assert expl["latency_budget"]["rtt_source"] == "heartbeat+tunnel"
                 assert all(p["model_mib"] > 0 for p in body["loaded"]["partition_map"])
 
                 req = c.post("/api/v1/requests", json={"model": "group-default", "visibility": "private",

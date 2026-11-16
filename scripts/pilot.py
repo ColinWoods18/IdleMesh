@@ -138,10 +138,17 @@ def show_stages(expl: dict) -> None:
     for s in expl.get("stages", []):
         print(f"  {s['name']:<16} layers {s['layers'][0]:>3}-{s['layers'][1] - 1:<3} "
               f"head={'yes' if s.get('holds_output_head') else 'no ':<3} transport={s.get('transport', 'local'):<9} "
-              f"endpoint={s.get('endpoint') or '-':<22} rtt={s.get('rtt_ms', 0)} ms")
+              f"endpoint={s.get('endpoint') or '-':<22} rtt={s.get('rtt_ms', 0)} ms ({s.get('rtt_source', 'heartbeat')})"
+              + (f", planned with {s['planned_rtt_ms']} ms" if "planned_rtt_ms" in s else "")
+              + (f"  [rtt measurement failed: {s['rtt_measurement_error']}]" if s.get("rtt_measurement_error") else ""))
+    planned = expl.get("planned_latency_budget")
+    if planned:
+        print(f"  planned:   {planned.get('per_token_ms')} ms/token ({planned.get('tokens_per_s')} tokens/s) "
+              f"from {planned.get('rtt_source') or 'heartbeat'} round trips")
     if budget:
         print(f"  predicted: {budget.get('per_token_ms')} ms/token ({budget.get('tokens_per_s')} tokens/s), "
-              f"network {budget.get('network_ms')} ms, slowest stage {budget.get('dominant_stage')}")
+              f"network {budget.get('network_ms')} ms, slowest stage {budget.get('dominant_stage')}"
+              + (" (round trips timed through the tunnels at load)" if planned else ""))
 
 
 def wait_deployment(c: httpx.Client, gid: str, timeout: float) -> dict:
@@ -175,6 +182,10 @@ def cmd_deploy(a) -> None:
     print(f"{final['state']} after {time.time() - t0:.1f} s")
     if final["state"] != "ready":
         sys.exit(f"deployment did not become ready: {final.get('error') or 'see coordinator log'}")
+    loaded = check(c.get(f"/api/v1/groups/{gid}/deployment")).get("explanation") or {}
+    if loaded.get("planned_latency_budget"):
+        print("as loaded:")
+        show_stages(loaded)
 
 
 def cmd_status(a) -> None:
@@ -212,6 +223,26 @@ def cmd_ask(a) -> None:
           + (f", error {res['error_code']}" if res["error_code"] else ""))
 
 
+def prediction_check(ok: list[dict], budget: dict) -> dict:
+    """Fit elapsed = fixed + per_token * tokens across requests, and compare the slope with the prediction.
+
+    The slope is decode time per token as the user sees it; the intercept absorbs prompt processing and
+    polling. Spec 7.2 asks predicted and traced per-token time to agree within 30 percent.
+    """
+    pts = [(r["completion_tokens"], r["elapsed_s"]) for r in ok if r["completion_tokens"]]
+    if len(pts) < 3 or len({t for t, _ in pts}) < 2:
+        return {"note": "need at least 3 completed requests with different lengths to fit ms/token"}
+    mx, my = statistics.fmean(t for t, _ in pts), statistics.fmean(e for _, e in pts)
+    slope = sum((t - mx) * (e - my) for t, e in pts) / sum((t - mx) ** 2 for t, _ in pts)
+    out = {"fit_ms_per_token": round(slope * 1000, 2), "fit_fixed_s": round(my - slope * mx, 3)}
+    pred = budget.get("per_token_ms")
+    if pred and slope > 0:
+        err = (pred - slope * 1000) / (slope * 1000) * 100
+        out.update({"predicted_ms_per_token": pred, "rtt_source": budget.get("rtt_source"),
+                    "prediction_error_pct": round(err, 1), "within_30pct": abs(err) <= 30})
+    return out
+
+
 def cmd_bench(a) -> None:
     state = load()
     c = client(state)
@@ -232,9 +263,10 @@ def cmd_bench(a) -> None:
                "median_elapsed_s": round(statistics.median(r["elapsed_s"] for r in ok), 3) if ok else None,
                "median_tokens_per_s": round(statistics.median(r["completion_tokens"] / r["elapsed_s"] for r in ok), 2)
                if ok else None}
+    summary.update(prediction_check(ok, (dep.get("explanation") or {}).get("latency_budget") or {}))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     path = ROOT / "benchmarks" / "results" / f"pilot-3machine-{stamp}.json"
-    path.write_text(json.dumps({"benchmark": "pilot-3machine", "utc": stamp, "deployment": dep,
+    path.write_text(json.dumps({"benchmark": "pilot-3machine", "utc": stamp, "network": a.network, "deployment": dep,
                                 "summary": summary, "runs": [{k: v for k, v in r.items() if k != "answer"}
                                                               for r in runs]}, indent=2))
     print(json.dumps(summary, indent=2))
@@ -271,6 +303,8 @@ def main() -> None:
     b = sub.add_parser("bench")
     b.add_argument("--n", type=int, default=10)
     b.add_argument("--max-tokens", type=int, default=64)
+    b.add_argument("--network", default=None,
+                   help='how each machine is connected, recorded with the results, e.g. "Mac=ethernet HP=wifi VM=wifi"')
     a = ap.parse_args()
     {"setup": cmd_setup, "login": cmd_login, "code": cmd_code, "devices": cmd_devices, "deploy": cmd_deploy,
      "status": cmd_status, "ask": cmd_ask, "bench": cmd_bench, "policy": cmd_policy}[a.cmd](a)

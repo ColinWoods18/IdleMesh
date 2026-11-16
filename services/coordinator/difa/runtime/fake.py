@@ -26,7 +26,7 @@ class FakeRuntime:
         self._loaded[deployment_id] = {"partition_map": partition_map, "names": [s["name"] for s in placement["stages"]]}
         return {"manifest_digest": digest, "partition_map": partition_map}
 
-    async def unload_deployment(self, deployment_id: str) -> None:
+    async def unload_deployment(self, deployment_id: str, worker_lost: str | None = None) -> None:
         self._loaded.pop(deployment_id, None)
 
     async def health(self) -> dict:

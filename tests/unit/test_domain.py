@@ -246,3 +246,32 @@ def test_committed_calibration_meets_the_30_percent_target():
     report = json.loads(runs[-1].read_text())
     assert report["validation"] and all(abs(v["error_pct"]) <= 30 for v in report["validation"])
     assert all(abs(v["error_pct"]) > 30 for v in report["bandwidth_only_model"])  # the old model fails
+
+
+def test_path_rtt_replaces_heartbeat_rtt_and_keeps_the_planned_budget():
+    from difa.domain.placement import LLAMACPP_RPC_V090 as cost
+    from difa.domain.placement import reestimate_with_path_rtt
+    policy = PlacementPolicy(backend_digest="fake-runtime-0.1", local_device="mac")
+    out = plan(REF, CATALOG["pilot-test-c"], policy)
+    before = dict(out["latency_budget"])
+    assert before["rtt_source"] == "heartbeat"
+    reestimate_with_path_rtt(out, {"vm": {"mean_ms": 9.0, "median_ms": 8.5, "min_ms": 7.0, "p90_ms": 12.0,
+                                          "samples": 16}})
+    vm = next(s for s in out["stages"] if s["device_id"] == "vm")
+    hp = next(s for s in out["stages"] if s["device_id"] == "hp")
+    assert vm["rtt_ms"] == 9.0 and vm["planned_rtt_ms"] == 60 and vm["rtt_source"] == "tunnel"
+    assert hp["rtt_ms"] == 5 and hp["rtt_source"] == "heartbeat"
+    after = out["latency_budget"]
+    assert out["planned_latency_budget"]["per_token_ms"] == before["per_token_ms"]
+    assert abs((before["network_ms"] - after["network_ms"]) - cost.round_trips_per_token * 51) < 0.02
+    assert after["rtt_source"] == "heartbeat+tunnel"
+    assert reestimate_with_path_rtt(out, {}) is out  # nothing measured: unchanged
+
+
+def test_planning_prefers_a_recent_tunnel_rtt():
+    import time
+    from difa.api.app import PATH_RTT_MAX_AGE_S, _planning_rtt
+    now = time.monotonic()
+    assert _planning_rtt({"d": (9.0, now)}, "d", 18.0) == (9.0, "tunnel")
+    assert _planning_rtt({"d": (9.0, now - PATH_RTT_MAX_AGE_S - 1)}, "d", 18.0) == (18.0, "heartbeat")
+    assert _planning_rtt(None, "d", 18.0) == (18.0, "heartbeat")

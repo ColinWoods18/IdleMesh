@@ -112,6 +112,7 @@ def test_lowering_the_cap_kills_the_worker_and_drains_the_deployment(coordinator
 
         r = c.post(f"/api/v1/groups/{gid}/deployment", json={"model": "qwen2.5-0.5b-q8", "require_all": True})
         assert r.status_code == 200, r.text
+        dep_id = r.json()["deployment_id"]
         stages = r.json()["explanation"]["stages"]
         assert all(s["endpoint"] for s in stages if s["name"] != "Mac Studio")  # addresses came from the agents
         assert all(p["model_mib"] > 0 for p in r.json()["loaded"]["partition_map"])
@@ -126,6 +127,10 @@ def test_lowering_the_cap_kills_the_worker_and_drains_the_deployment(coordinator
                        json={"memory_cap_bytes": 50_000_000}).status_code == 200
         until(lambda: "worker killed: memory cap exceeded" in logs["HP EliteBook"].read_text(), 20, "cap kill")
         until(lambda: c.get(f"/api/v1/groups/{gid}/deployment").json()["state"] == "unavailable", 20, "drain")
+        # The drain stops llama-server without its RPC cleanup, so the log shows why and no abort.
+        dep_log = tmp_path / f"{dep_id}.log"
+        until(lambda: "difa: drain" in dep_log.read_text(errors="replace"), 15, "drain noted in backend log")
+        assert "Remote RPC server crashed" not in dep_log.read_text(errors="replace")
         r = c.post("/api/v1/requests", json={"model": "group-default", "visibility": "private",
                                              "max_output_tokens": 8, "messages": [{"role": "user", "content": "hi"}]})
         assert r.status_code == 503

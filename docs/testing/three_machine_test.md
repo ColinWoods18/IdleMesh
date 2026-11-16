@@ -81,7 +81,20 @@ deployment dep_...: preparing
 preparing | Ubuntu VM: ready 100% | HP EliteBook: ready 100%
 ready
 ready after ... s
+as loaded:
+  Ubuntu VM        ...  rtt=... ms (tunnel), planned with ... ms
+  HP EliteBook     ...  rtt=... ms (tunnel), planned with ... ms
+  Mac Studio       ...  rtt=... ms (heartbeat)
+  planned:   ... ms/token (... tokens/s) from heartbeat round trips
+  predicted: ... ms/token (... tokens/s), ... (round trips timed through the tunnels at load)
 ```
+
+The first prediction uses the round trip each agent reports with its heartbeat. That figure includes HTTP
+and the coordinator's request handling, so it reads high. Just before loading, the coordinator times 16
+llama.cpp RPC round trips through each tunnel, then predicts again. The `as loaded` prediction is the
+one to compare with the bench. The coordinator reuses those round trips for 15 minutes, so a second
+`pilot deploy` in that window plans with them from the start (`rtt=... ms (tunnel)` in the first
+listing).
 
 Then confirm the remote stages run through the tunnel:
 
@@ -108,14 +121,27 @@ pilot ask "Name three planets."
 
 Then a timed run of 20 requests. The results are saved to `benchmarks/results/pilot-3machine-<time>.json`.
 
+Use `--network` to record how each machine is connected; it is saved with the results.
+
 ```bash
-pilot bench --n 20 --max-tokens 64
+pilot bench --n 20 --max-tokens 64 --network "Mac=ethernet HP=wifi VM=wifi"
+```
+
+The summary at the end checks the prediction for you:
+
+```
+  "fit_ms_per_token": ...,        <- measured decode time per token (slope across requests)
+  "fit_fixed_s": ...,             <- prompt processing and polling per request
+  "predicted_ms_per_token": ...,  <- the "as loaded" prediction
+  "rtt_source": "heartbeat+tunnel",
+  "prediction_error_pct": ...,
+  "within_30pct": true            <- spec 7.2 target
 ```
 
 **Record:**
-- the predicted ms/token from step 2;
-- the median tokens/s from the bench;
-- the round-trip times shown for each stage.
+- the `planned` and `predicted` ms/token from step 2;
+- the bench summary above;
+- how each machine is connected (Wi-Fi, Ethernet, VPN), and whether they share a subnet.
 
 From Phase 1 on one Mac, expect speed to be set mostly by round trips: about one round trip per token
 for each remote device, plus about 0.62 MB per token sent to each remote device. On a home network
@@ -133,7 +159,7 @@ Run each check, then load again with `pilot deploy` before the next.
 | 4a | Pause the VM: `pilot policy "Ubuntu VM" --pause` | Within a few seconds the VM agent prints `worker stopped`, and `pilot status` shows `unavailable`. `pilot ask "hi"` returns `503 MODEL_UNAVAILABLE`. |
 | 4b | Resume: `pilot policy "Ubuntu VM" --resume`, then `pilot deploy` | The worker restarts and the deployment becomes `ready`. |
 | 4c | Stop the HP agent with Ctrl-C | The agent prints `agent stopping: worker halted`. Within about 15 seconds the deployment becomes `unavailable`. Restart the agent with the same `run` command, then `pilot deploy`. |
-| 4d | Lower the HP's cap below what its worker holds: `pilot policy "HP EliteBook" --cap-gb 0.01` | The HP agent prints `worker killed: memory cap exceeded`, and the deployment drains. |
+| 4d | Lower the HP's cap below what its worker holds: `pilot policy "HP EliteBook" --cap-gb 0.01` | The HP agent prints `worker killed: memory cap exceeded`, and the deployment drains. The coordinator's adapter log for that deployment ends with `difa: drain (...)`, not a crash trace. |
 | 4e | Raise it back: `pilot policy "HP EliteBook" --cap-gb 8`, then `pilot deploy` | The worker restarts and the deployment is `ready` again. |
 | 4f | Stranger check: run `nc -vz HP_IP 50100` and `nc -vz VM_IP 50100` | The ports are reachable, but the agents log `tunnel: rejected`. Nothing reaches the worker without the coordinator's certificate. |
 
@@ -165,6 +191,7 @@ comparison isn't supported end to end yet. Measured on one Mac, the tunnel costs
 | `TUNNEL_FAILED: TLS handshake ... failed` | The device pinned a different coordinator certificate, for example after `~/.local/share/difa/coordinator-tunnel.*` was deleted. Delete the device's `agent.json` and enroll again. |
 | `LICENSE_NOT_ACCEPTED` | Add `--accept-license apache-2.0` to that device's `run` command. |
 | `LOAD_FAILED` | Usually a llama.cpp version mismatch, or a worker crash. Check that every machine built tag v0.9.0, and look at the coordinator's adapter log in `~/.cache/difa-phase1/adapter-logs/`. |
+| `rtt measurement failed` after a stage in `as loaded` | The tunnel was reachable but the worker did not answer RPC commands in time, often because it was still busy with a previous client. The deployment still loads, using the heartbeat round trip for that stage. Run `pilot deploy` again. |
 | `PARTITION_MISMATCH` | The weights llama.cpp loaded on a device differ from the plan. Send the adapter log. This is a finding, not a setup error. |
 | `Session expired` | Run `pilot login`. |
 | A device agent prints `device authorization revoked` and exits | The coordinator was restarted with `--fresh`, which forgets every device. Delete that device's `agent.json` and enroll again. |

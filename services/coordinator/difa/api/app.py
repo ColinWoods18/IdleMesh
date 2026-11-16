@@ -19,7 +19,7 @@ from ..domain.access import Branch, ForkError, Principal, Role, Scope, Visibilit
     can_delete_branch, can_read_branch, can_write_branch, plan_fork
 from ..domain.fairqueue import QueueFull
 from ..domain.lifecycle import TERMINAL, RequestState
-from ..domain.placement import DeviceProfile, PlacementPolicy, plan
+from ..domain.placement import DeviceProfile, PlacementPolicy, plan, reestimate_with_path_rtt
 from ..runtime.base import RuntimeFailure
 from ..runtime.fake import FakeRuntime
 from ..scheduler import Scheduler
@@ -67,6 +67,7 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
     app.state.tunnels = TunnelManager(CoordinatorIdentity(tunnel_dir))
     app.state.prefetch = {}  # group_id -> pending partition download before a deployment loads (FR 30)
     app.state.prefetch_errors = {}
+    app.state.path_rtt = {}  # device_id -> (mean ms through the worker tunnel, monotonic time measured)
     app.state.passwords = Passwords(settings.argon2_fast)
     app.state.login_attempts = {}
     errors.install(app)
@@ -136,7 +137,7 @@ async def mark_unavailable(app, group_id: str, deployment_id: str, reason: str) 
         store.audit(c, group_id, None, "deployment.unavailable", deployment_id, reason)
     sched.device_lost(group_id)
     sched.set_deployment(group_id, None, None)
-    await unload(app, deployment_id)
+    await unload(app, deployment_id, worker_lost=reason)
 
 
 def _fail_deployment(store: Store, group_id: str, dep_id: str, code: str, detail: str | None = None) -> None:
@@ -199,15 +200,16 @@ async def _advance_prefetch(app, group_id: str) -> None:
             app.state.prefetch_errors[group_id] = {"code": e.code, "message": e.message}
 
 
-async def unload(app, deployment_id: str) -> None:
+async def unload(app, deployment_id: str, worker_lost: str | None = None) -> None:
     """Stop the backend first, then its tunnels, so no stage is left half connected."""
-    await app.state.runtime.unload_deployment(deployment_id)
+    await app.state.runtime.unload_deployment(deployment_id, worker_lost=worker_lost)
     await run_in_threadpool(app.state.tunnels.close, deployment_id)
 
 
 async def open_tunnels(app, store: Store, deployment_id: str, explanation: dict) -> None:
     """Route every remote stage whose agent runs the mTLS tunnel through a loopback forwarder."""
     local = getattr(app.state.runtime, "local_device", None)
+    measured: dict[str, dict] = {}
     for st in explanation["stages"]:
         if st["name"] == local or not st.get("endpoint"):
             continue
@@ -218,11 +220,22 @@ async def open_tunnels(app, store: Store, deployment_id: str, explanation: dict)
             continue
         try:
             await run_in_threadpool(app.state.tunnels.probe, st["endpoint"], d["public_key"])
+        except TunnelError as e:
+            await run_in_threadpool(app.state.tunnels.close, deployment_id)
+            raise RuntimeFailure("TUNNEL_FAILED", f"{st['name']}: {e}") from None
+        try:  # time the token path while the worker is still idle; heartbeat RTT stays as the fallback
+            measured[st["device_id"]] = await run_in_threadpool(app.state.tunnels.measure_rtt, st["endpoint"],
+                                                                d["public_key"])
+            app.state.path_rtt[st["device_id"]] = (measured[st["device_id"]]["mean_ms"], time.monotonic())
+        except TunnelError as e:
+            st["rtt_measurement_error"] = str(e)
+        try:
             st["rpc_endpoint"] = await run_in_threadpool(app.state.tunnels.open, deployment_id, st["endpoint"],
                                                          d["public_key"])
         except TunnelError as e:
             await run_in_threadpool(app.state.tunnels.close, deployment_id)
             raise RuntimeFailure("TUNNEL_FAILED", f"{st['name']}: {e}") from None
+    reestimate_with_path_rtt(explanation, measured)
 
 
 def _branch(row) -> Branch:
@@ -236,7 +249,18 @@ def _load_branch(store: Store, p: Principal, branch_id: str):
     return row
 
 
-def _profiles(store: Store, group_id: str, settings: Settings) -> list[DeviceProfile]:
+PATH_RTT_MAX_AGE_S = 900
+
+
+def _planning_rtt(path_rtt: dict | None, device_id: str, heartbeat_rtt: float) -> tuple[float, str]:
+    """Prefer a recent round trip timed through the worker tunnel over the heartbeat's HTTP round trip."""
+    hit = (path_rtt or {}).get(device_id)
+    if hit and time.monotonic() - hit[1] <= PATH_RTT_MAX_AGE_S:
+        return hit[0], "tunnel"
+    return heartbeat_rtt, "heartbeat"
+
+
+def _profiles(store: Store, group_id: str, settings: Settings, path_rtt: dict | None = None) -> list[DeviceProfile]:
     out = []
     for d in store.all("SELECT * FROM devices WHERE group_id = ?", (group_id,)):
         cap, pol = json.loads(d["capabilities"]), json.loads(d["policy"])
@@ -246,6 +270,7 @@ def _profiles(store: Store, group_id: str, settings: Settings) -> list[DevicePro
         if fresh and worker and worker["state"] != "running":
             reason = f"inference worker stopped: {worker.get('last_stop_reason') or 'not started'}"
         bandwidth, source = cap["mem_bandwidth_gbps"], "reported"
+        rtt, rtt_source = _planning_rtt(path_rtt, d["id"], cap["rtt_ms"])
         probe = cap.get("decode_probe")
         if probe and probe["model"] in CATALOG:  # convert timed decoding into streamed bytes per second
             ref = CATALOG[probe["model"]]
@@ -254,7 +279,7 @@ def _profiles(store: Store, group_id: str, settings: Settings) -> list[DevicePro
         out.append(DeviceProfile(
             device_id=d["id"], name=d["name"], os=cap["os"], arch=cap["arch"], backend_digest=cap["backend_digest"],
             formats=tuple(cap["formats"]), budget_bytes=min(pol["memory_cap_bytes"], cap["allocatable_bytes"]),
-            mem_bandwidth_gbps=bandwidth, rtt_ms=cap["rtt_ms"], power=cap["power"],
+            mem_bandwidth_gbps=bandwidth, rtt_ms=rtt, rtt_source=rtt_source, power=cap["power"],
             allow_battery=pol["allow_battery"], ready=reason is None, authorized=d["status"] == "active",
             paused=pol["paused"] or pol.get("reported_paused", False), stability=1.0,
             endpoint=worker["endpoint"] if worker and worker["state"] == "running" else None,
@@ -583,7 +608,7 @@ def register(app: FastAPI) -> None:
     async def list_devices(group_id: str, request: Request, p: Principal = Depends(current)):
         require_group(p, group_id)
         out = []
-        for prof in _profiles(S(request), group_id, settings):
+        for prof in _profiles(S(request), group_id, settings, request.app.state.path_rtt):
             state = ("unavailable" if not prof.ready else "paused" if prof.paused else
                      "incompatible" if prof.backend_digest != request.app.state.runtime.backend_digest else "ready")
             out.append({"device_id": prof.device_id, "name": prof.name, "os": prof.os, "arch": prof.arch,
@@ -606,7 +631,7 @@ def register(app: FastAPI) -> None:
             raise ApiError(409, "DEPLOYMENT_BUSY", "Wait for queued and running requests to finish.", True)
         policy = PlacementPolicy(backend_digest=request.app.state.runtime.backend_digest, require_all=body.require_all,
                                  local_device=getattr(request.app.state.runtime, "local_device", None))
-        explanation = plan(_profiles(S(request), group_id, settings), model, policy)
+        explanation = plan(_profiles(S(request), group_id, settings, request.app.state.path_rtt), model, policy)
         if not explanation["feasible"]:
             raise ApiError(409, "PLACEMENT_INFEASIBLE", explanation.get("reason", "No feasible placement."),
                            extra={"explanation": explanation})

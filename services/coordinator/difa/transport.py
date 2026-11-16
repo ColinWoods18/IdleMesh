@@ -13,7 +13,10 @@ import hashlib
 import os
 import socket
 import ssl
+import statistics
+import struct
 import threading
+import time
 from pathlib import Path
 
 from cryptography import x509
@@ -79,6 +82,32 @@ class CoordinatorIdentity:
 
 class TunnelError(Exception):
     pass
+
+
+# llama.cpp RPC framing (ggml-rpc.cpp, v0.9.0, protocol 8.0.x). Request: command byte, little-endian
+# u64 payload size, payload. Reply: u64 size, payload.
+RPC_CMD_HELLO, RPC_CMD_DEVICE_COUNT = 14, 15
+RPC_CONN_CAPS_SIZE = 24
+RPC_PROTO_MAJOR = 8
+
+
+def rpc_command(cmd: int, payload: bytes) -> bytes:
+    return bytes([cmd]) + struct.pack("<Q", len(payload)) + payload
+
+
+async def rpc_reply(r: asyncio.StreamReader, limit: int = 4096) -> bytes:
+    (size,) = struct.unpack("<Q", await r.readexactly(8))
+    if size > limit:
+        raise OSError(f"unexpected RPC reply of {size} bytes")
+    return await r.readexactly(size)
+
+
+def rtt_summary(times_ms: list[float]) -> dict:
+    """Mean is the planning value: a token pays every round trip, so jitter counts at its average."""
+    s = sorted(times_ms)
+    return {"mean_ms": round(statistics.fmean(s), 2), "median_ms": round(statistics.median(s), 2),
+            "min_ms": round(s[0], 2), "p90_ms": round(s[min(len(s) - 1, int(0.9 * len(s)))], 2),
+            "samples": len(s)}
 
 
 class _Forwarder:
@@ -174,6 +203,45 @@ class TunnelManager:
             raise TunnelError(f"TLS handshake with {remote} failed: {e.reason or e}") from None
         except (OSError, asyncio.TimeoutError, TimeoutError) as e:
             raise TunnelError(f"cannot reach the worker tunnel at {remote}: {e or 'timeout'}") from None
+
+    def measure_rtt(self, remote: str, device_cert_pem: str, samples: int = 16, timeout: float = 5) -> dict:
+        """Time llama.cpp RPC round trips to an idle worker through its tunnel (spec 7.2 RTT input).
+
+        This is the path every generated token takes: TLS to the agent, the agent's forwarder, the worker,
+        and back. After the HELLO handshake it sends `samples` back-to-back DEVICE_COUNT commands (the
+        smallest request that gets a reply) and times each. Back-to-back sampling matches the token
+        stream, so Wi-Fi power-save wake-ups are not counted. The worker serves one client at a time, so
+        call this only while no deployment is connected to it.
+        """
+        async def go():
+            host, _, port = remote.rpartition(":")
+            r, w = await asyncio.wait_for(asyncio.open_connection(
+                host.strip("[]"), int(port), ssl=self.identity.client_context(device_cert_pem)), timeout)
+            sock = w.get_extra_info("socket")
+            if sock is not None:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            try:
+                w.write(rpc_command(RPC_CMD_HELLO, bytes(RPC_CONN_CAPS_SIZE)))
+                hello = await asyncio.wait_for(rpc_reply(r), timeout)
+                if len(hello) < 3 or hello[0] != RPC_PROTO_MAJOR:
+                    raise TunnelError(f"worker at {remote} speaks RPC protocol {'.'.join(map(str, hello[:3]))}, "
+                                      f"expected {RPC_PROTO_MAJOR}.x")
+                times = []
+                for _ in range(samples):
+                    t0 = time.perf_counter()
+                    w.write(rpc_command(RPC_CMD_DEVICE_COUNT, b""))
+                    await asyncio.wait_for(rpc_reply(r), timeout)
+                    times.append((time.perf_counter() - t0) * 1000)
+                return times
+            finally:
+                w.close()
+        try:
+            times = self._call(go(), timeout * (samples + 2))
+        except ssl.SSLError as e:
+            raise TunnelError(f"TLS handshake with {remote} failed: {e.reason or e}") from None
+        except (OSError, asyncio.TimeoutError, TimeoutError, asyncio.IncompleteReadError) as e:
+            raise TunnelError(f"no RPC reply through the tunnel at {remote}: {e or 'timeout'}") from None
+        return rtt_summary(times)
 
     def close(self, owner: str) -> None:
         for fwd in self._open.pop(owner, []):

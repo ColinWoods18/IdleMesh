@@ -1,0 +1,340 @@
+{
+  "benchmark": "pilot-3machine",
+  "utc": "20261116T233456Z",
+  "network": "Mac=ethernet HP=wifi VM=wifi",
+  "deployment": {
+    "deployment_id": "dep_a014e07679c9f018",
+    "model": "qwen2.5-0.5b-q8",
+    "state": "ready",
+    "explanation": {
+      "pipeline_version": "placement-pipeline/1",
+      "model": {
+        "name": "qwen2.5-0.5b-q8",
+        "revision": "Qwen/Qwen2.5-0.5B-Instruct-GGUF@q8_0",
+        "class": "dense",
+        "layers": 24,
+        "weights_bytes": 380507256,
+        "synthetic": false
+      },
+      "policy": {
+        "backend_digest": "llama.cpp-v0.9.0",
+        "headroom_fraction": 0.1,
+        "active_sequences": 1,
+        "require_all": true,
+        "local_device": "Mac Studio",
+        "backend_cost": {
+          "name": "llama.cpp-v0.9.0-rpc",
+          "first_remote_ms": 3.58,
+          "extra_remote_ms": 0.74,
+          "round_trips_per_token": 1.02,
+          "bytes_per_token_per_remote": 620000.0
+        },
+        "weights": {
+          "bandwidth": 0.4,
+          "latency": 0.3,
+          "power": 0.2,
+          "stability": 0.1
+        }
+      },
+      "filtered_out": [],
+      "scores": [
+        {
+          "device_id": "dev_6d66009df82e8849",
+          "total": 0.9752,
+          "components": {
+            "bandwidth": 1.0,
+            "latency": 0.9174,
+            "power": 1.0,
+            "stability": 1.0
+          }
+        },
+        {
+          "device_id": "dev_62ea711fd8a7d75d",
+          "total": 0.4347,
+          "components": {
+            "bandwidth": 0.0538,
+            "latency": 0.3774,
+            "power": 1.0,
+            "stability": 1.0
+          }
+        },
+        {
+          "device_id": "dev_823dd682b233a4b5",
+          "total": 0.356,
+          "components": {
+            "bandwidth": 0.4842,
+            "latency": 0.2078,
+            "power": 0.0,
+            "stability": 1.0
+          }
+        }
+      ],
+      "single_device_fit": [
+        "dev_6d66009df82e8849",
+        "dev_62ea711fd8a7d75d",
+        "dev_823dd682b233a4b5"
+      ],
+      "feasible": true,
+      "stages": [
+        {
+          "device_id": "dev_823dd682b233a4b5",
+          "name": "HP EliteBook",
+          "layers": [
+            0,
+            1
+          ],
+          "holds_output_head": false,
+          "endpoint": "10.10.150.105:50100",
+          "bandwidth_gbps": 78.3,
+          "bandwidth_source": "reported",
+          "weights_bytes": 15854469,
+          "kv_bytes": 2097152,
+          "runtime_bytes": 67108864,
+          "headroom_bytes": 800000000,
+          "budget_bytes": 8000000000,
+          "margin_bytes": 7114939515,
+          "est_compute_ms": 0.2,
+          "rtt_ms": 17.09,
+          "rtt_source": "tunnel",
+          "link_mbps": null,
+          "est_network_ms": 17.43,
+          "transport": "mtls",
+          "rpc_endpoint": "127.0.0.1:57146",
+          "planned_rtt_ms": 190.6,
+          "rtt_measurement": {
+            "mean_ms": 17.09,
+            "median_ms": 15.04,
+            "min_ms": 11.5,
+            "p90_ms": 25.92,
+            "samples": 16
+          }
+        },
+        {
+          "device_id": "dev_62ea711fd8a7d75d",
+          "name": "Ubuntu VM",
+          "layers": [
+            1,
+            2
+          ],
+          "holds_output_head": false,
+          "endpoint": "10.10.132.197:50100",
+          "bandwidth_gbps": 8.7,
+          "bandwidth_source": "reported",
+          "weights_bytes": 15854469,
+          "kv_bytes": 2097152,
+          "runtime_bytes": 67108864,
+          "headroom_bytes": 600000000,
+          "budget_bytes": 6000000000,
+          "margin_bytes": 5314939515,
+          "est_compute_ms": 1.82,
+          "rtt_ms": 10.25,
+          "rtt_source": "tunnel",
+          "link_mbps": null,
+          "est_network_ms": 10.46,
+          "transport": "mtls",
+          "rpc_endpoint": "127.0.0.1:57149",
+          "planned_rtt_ms": 82.5,
+          "rtt_measurement": {
+            "mean_ms": 10.25,
+            "median_ms": 7.35,
+            "min_ms": 4.71,
+            "p90_ms": 25.2,
+            "samples": 16
+          }
+        },
+        {
+          "device_id": "dev_6d66009df82e8849",
+          "name": "Mac Studio",
+          "layers": [
+            2,
+            24
+          ],
+          "holds_output_head": true,
+          "endpoint": null,
+          "bandwidth_gbps": 161.7,
+          "bandwidth_source": "decode_probe",
+          "weights_bytes": 493438891,
+          "kv_bytes": 46137344,
+          "runtime_bytes": 67108864,
+          "headroom_bytes": 6400000000,
+          "budget_bytes": 64000000000,
+          "margin_bytes": 56993314901,
+          "est_compute_ms": 3.05,
+          "rtt_ms": 4.5,
+          "rtt_source": "heartbeat",
+          "link_mbps": null,
+          "est_network_ms": 0.0
+        }
+      ],
+      "reservation_bytes": {
+        "dev_823dd682b233a4b5": 2097152,
+        "dev_62ea711fd8a7d75d": 2097152,
+        "dev_6d66009df82e8849": 46137344
+      },
+      "latency_budget": {
+        "compute_ms": 5.07,
+        "network_ms": 27.89,
+        "backend_overhead_ms": 4.32,
+        "remote_stages": 2,
+        "per_token_ms": 37.28,
+        "tokens_per_s": 26.82,
+        "dominant_stage": "dev_823dd682b233a4b5",
+        "rtt_source": "tunnel",
+        "backend_cost": {
+          "name": "llama.cpp-v0.9.0-rpc",
+          "first_remote_ms": 3.58,
+          "extra_remote_ms": 0.74,
+          "round_trips_per_token": 1.02,
+          "bytes_per_token_per_remote": 620000.0
+        },
+        "basis": "weights/effective bandwidth + fitted backend overhead + round trips and per-token traffic per remote stage; link bandwidth term omitted where unmeasured"
+      },
+      "capacity_basis": "fits a single eligible device budget",
+      "planned_latency_budget": {
+        "compute_ms": 5.07,
+        "network_ms": 278.56,
+        "backend_overhead_ms": 4.32,
+        "remote_stages": 2,
+        "per_token_ms": 287.95,
+        "tokens_per_s": 3.47,
+        "dominant_stage": "dev_823dd682b233a4b5",
+        "rtt_source": "heartbeat",
+        "basis": "weights/effective bandwidth + fitted backend overhead + round trips and per-token traffic per remote stage; link bandwidth term omitted where unmeasured"
+      }
+    }
+  },
+  "summary": {
+    "requests": 20,
+    "completed": 20,
+    "median_elapsed_s": 2.077,
+    "median_tokens_per_s": 19.29,
+    "fit_ms_per_token": 39.78,
+    "fit_fixed_s": 0.453,
+    "predicted_ms_per_token": 37.28,
+    "rtt_source": "tunnel",
+    "prediction_error_pct": -6.3,
+    "within_30pct": true
+  },
+  "runs": [
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.106,
+      "completion_tokens": 60
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.051,
+      "completion_tokens": 12
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 2.897,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.244,
+      "completion_tokens": 20
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 2.7,
+      "completion_tokens": 60
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 0.84,
+      "completion_tokens": 12
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.111,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.253,
+      "completion_tokens": 20
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 2.901,
+      "completion_tokens": 60
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.049,
+      "completion_tokens": 12
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 2.699,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.038,
+      "completion_tokens": 20
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 2.686,
+      "completion_tokens": 60
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 0.841,
+      "completion_tokens": 12
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.114,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.467,
+      "completion_tokens": 20
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.103,
+      "completion_tokens": 60
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 0.836,
+      "completion_tokens": 12
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 2.897,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.253,
+      "completion_tokens": 20
+    }
+  ]
+}

@@ -235,7 +235,7 @@ However, every drain leaves a crash trace, which will hide real crashes in the l
 The owner-control checks (4a–4f) were run, but their outcomes were not recorded in `note.md`. The logs
 show only that drains happened.
 
-**Changes made after this round (2026-11-16, not yet run on the physical machines).**
+**Changes made after this round (2026-11-16; run on the physical machines in Round 5).**
 - Just before loading, the coordinator times 16 back-to-back llama.cpp RPC round trips through each
   remote stage's tunnel (HELLO, then DEVICE_COUNT). It replaces the heartbeat RTT with the mean of those
   samples and predicts again. The plan keeps the heartbeat-based prediction as `planned_latency_budget`
@@ -252,3 +252,58 @@ show only that drains happened.
 - If possible, also run it with the HP wired, to compare.
 - Record the 4a–4f results.
 - The capacity tests (B and C) need the larger model, which is a 58 GB download and needs approval.
+
+## Round 5: tunnel-timed round trips on three physical machines (2026-11-16)
+
+Raw results: `pilot-3machine-20261116T223828Z.json` (commit bbc5d3d), plus llama-server's timings from
+the adapter log `dep_1cee4af27a85105a`. Same machines, model and llama.cpp build as Round 4. Network:
+Wi-Fi on all three machines (`Mac=wifi HP=wifi VM=wifi`).
+
+| Stage | Heartbeat RTT (planned) | Tunnel RTT mean (median, min–p90), 16 samples |
+|---|---:|---:|
+| HP EliteBook, layer 0 | 48.4 ms | 16.72 ms (14.70, 10.79–31.35) |
+| Ubuntu VM, layer 1 | 17.3 ms | 9.33 ms (8.95, 6.26–12.21) |
+| Mac Studio, layers 2–23 + output | local | local |
+
+The tunnel measurement on the VM (9.3 ms) agrees with the ICMP ping from Round 4 (9.2 ms). The HP's
+heartbeat overstated its path by about three times.
+
+| | ms/token | tokens/s | Error against measured |
+|---|---:|---:|---:|
+| Planned (heartbeat RTT) | 76.49 | 13.1 | +73% |
+| As loaded (tunnel RTT) | 36.04 | 27.7 | −18% (llama.cpp) / −22% (bench fit) |
+| Measured, llama.cpp token-weighted (median 43.4, p10–p90 35.3–52.4) | 44.2 | 22.6 | |
+| Measured, bench fit across requests | 45.92 | 21.8 | |
+
+**The latency model now meets the spec 7.2 target on real links.** The as-loaded prediction is within
+30 percent of the trace (−18 to −22 percent). All 20 requests completed. The bench reports
+`within_30pct: true`. The prediction now errs on the fast side by 8–10 ms per token. Likely
+contributors, none yet isolated:
+- The fitted backend constants come from plaintext loopback workers (Round 2). They do not include the
+  tunnel's own cost, which Round 3 measured at 0.8–1.3 ms per token per stage.
+- Wi-Fi jitter while tokens stream. The HP's p90 round trip (31 ms) is almost twice its median, and
+  16 idle samples may underweight that tail.
+- The per-token round-trip count `k = 1.02` was fitted on loopback and may differ on lossy links.
+
+Adding the measured tunnel cost per mTLS stage would bring the prediction to about 38 ms (−14
+percent). Treat that as the next calibration step, not something to fit to this one run: refit
+`first_remote_ms`, `extra_remote_ms` and `k` with mTLS stages, using at least two network setups.
+
+**Decode speed was unchanged:** about 22 tokens/s, against 20–21 in Round 4. As expected, only the
+prediction changed, not the path. Prompt processing ran at 8.7 ms per prompt token (median).
+
+**Not exercised in this run:** owner-control drains (4a–4f). The deployment was not drained, so the new
+clean-stop path (`difa: drain`) has only been checked by the integration test so far.
+
+**Phase 1 gate status after Round 5 (spec section 14):**
+- Done:
+  - valid cross-platform execution (macOS Metal, Windows CPU, Linux CPU);
+  - actual remote computation through authenticated tunnels;
+  - owner limits enforced (Round 2 and the integration tests);
+  - a predicted per-token time within 30 percent on real Wi-Fi links.
+- Still to do:
+  - the Test C owner-budget result against the strongest single-device baseline (needs the larger
+    model, about 58 GB);
+  - an approved security path: the control channel is still plain HTTP;
+  - the recorded hardware decision;
+  - user review of measured waits (3–5 users).

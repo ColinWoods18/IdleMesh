@@ -53,6 +53,8 @@ impl Status {
 pub struct Source {
     pub coordinator: String,
     pub device_token: String,
+    /// Pinned control certificate fingerprint; weights from the coordinator use the same pinned channel.
+    pub fingerprint: Option<String>,
 }
 
 pub struct Prefetcher {
@@ -154,15 +156,18 @@ fn fetch_all(cache: &Path, source: &Source, url: &str, items: &[Item], status: &
     let rpc = cache.join("rpc");
     std::fs::create_dir_all(&rpc).map_err(|e| format!("cannot create cache directory: {e}"))?;
     let mut index = load_index(cache);
-    let http = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(6 * 3600))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let (connect, total) = (Duration::from_secs(15), Duration::from_secs(6 * 3600));
     let (full_url, auth) = if url.starts_with('/') {
         (format!("{}{}", source.coordinator.trim_end_matches('/'), url), true)
     } else {
         (url.to_string(), false)
+    };
+    // The device token goes only to the pinned coordinator; a model origin gets public-CA HTTPS, no token.
+    let http = if auth {
+        crate::control::client(&source.coordinator, source.fingerprint.as_deref(), connect, total)?.0
+    } else {
+        reqwest::blocking::Client::builder().connect_timeout(connect).timeout(total).build()
+            .map_err(|e| e.to_string())?
     };
     let add = |n: i64| {
         if let Some(s) = status.lock().unwrap().as_mut() {
@@ -271,7 +276,8 @@ mod tests {
     fn unaccepted_license_fails_without_downloading() {
         let dir = std::env::temp_dir().join(format!("difa-prefetch-test-{}", std::process::id()));
         let mut p = Prefetcher::new(dir.clone(), vec!["mit".into()],
-                                    Source { coordinator: "http://127.0.0.1:1".into(), device_token: "t".into() });
+                                    Source { coordinator: "http://127.0.0.1:1".into(), device_token: "t".into(),
+                                                     fingerprint: None });
         let m = serde_json::json!({"deployment_id": "dep_1", "license": "apache-2.0", "url": "/x", "tensors": []});
         assert!(p.offer(&m).unwrap().contains("not accepted"));
         let s = p.status().unwrap();

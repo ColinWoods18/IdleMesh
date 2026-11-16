@@ -27,6 +27,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import ssl
+
 import httpx
 
 DATA = Path(os.environ.get("DIFA_DATA_DIR", Path.home() / ".local" / "share" / "difa"))
@@ -48,8 +50,20 @@ def load() -> dict:
     return json.loads(SESSION.read_text())
 
 
+def verify(base: str):
+    """Trust exactly this coordinator's own control certificate (it is self-signed and on this machine)."""
+    if not base.startswith("https://"):
+        return True
+    cert = Path(os.environ.get("DIFA_CONTROL_CERT", DATA / "coordinator-control.crt"))
+    if not cert.exists():
+        sys.exit(f"{cert} not found: start the coordinator with scripts/dev_server.py first")
+    ctx = ssl.create_default_context(cafile=str(cert))
+    ctx.check_hostname = False  # pinned: the only trusted certificate is the coordinator's own
+    return ctx
+
+
 def client(state: dict) -> httpx.Client:
-    c = httpx.Client(base_url=state["base"], timeout=60)
+    c = httpx.Client(base_url=state["base"], timeout=60, verify=verify(state["base"]))
     if state.get("cookie"):
         c.cookies.set("difa_session", state["cookie"])
         c.headers["X-CSRF-Token"] = state["csrf"]
@@ -69,7 +83,7 @@ def check(r: httpx.Response) -> dict:
 
 
 def sign_in(state: dict, passphrase: str) -> None:
-    c = httpx.Client(base_url=state["base"], timeout=60)
+    c = httpx.Client(base_url=state["base"], timeout=60, verify=verify(state["base"]))
     r = c.post("/api/v1/auth/login", json={"group_id": state["group_id"], "login": state["login"],
                                            "passphrase": passphrase})
     info = check(r)
@@ -84,7 +98,8 @@ def cmd_setup(a) -> None:
     if getpass.getpass("Repeat passphrase: ") != p1:
         sys.exit("Passphrases differ.")
     r = httpx.post(f"{a.base}/api/v1/groups", json={"name": a.name, "owner_login": a.login,
-                                                    "owner_display_name": a.display_name, "passphrase": p1}, timeout=60)
+                                                    "owner_display_name": a.display_name, "passphrase": p1}, timeout=60,
+                   verify=verify(a.base))
     g = check(r)
     state["group_id"] = g["group_id"]
     print(f"group {g['group_id']} created (fingerprint {g['fingerprint']})")
@@ -101,6 +116,10 @@ def cmd_code(a) -> None:
     out = check(client(load()).post("/api/v1/devices/enrollment-codes"))
     print(out["code"])
     print(f"expires {out['expires_at']}; give it to one device's `difa-agent enroll --code ...`")
+    fp = out.get("coordinator_fingerprint")
+    if fp:
+        print(f"coordinator fingerprint: {' '.join(fp[i:i + 4] for i in range(0, 64, 4))}")
+        print(f"  on the device: --coordinator-fingerprint {fp[:16]}  (or the whole fingerprint)")
 
 
 def cmd_devices(a) -> None:
@@ -275,7 +294,8 @@ def cmd_bench(a) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="DIFA pilot operator helper (run on the coordinator Mac)")
-    ap.add_argument("--base", default="http://127.0.0.1:8765")
+    ap.add_argument("--base", default="https://127.0.0.1:8765",
+                    help="coordinator address for setup (later commands use the saved one)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("setup")
     s.add_argument("--name", default="Pilot")

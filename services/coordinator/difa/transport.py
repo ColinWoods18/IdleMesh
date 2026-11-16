@@ -10,6 +10,7 @@ round trips.
 import asyncio
 import datetime
 import hashlib
+import ipaddress
 import os
 import socket
 import ssl
@@ -33,6 +34,11 @@ def cert_fingerprint(pem: str) -> str:
     return hashlib.sha256(der).hexdigest()
 
 
+def grouped(fingerprint: str, digits: int = 64) -> str:
+    """Fingerprint in groups of four hex digits, for people to read out and type."""
+    return " ".join(fingerprint[i:i + 4] for i in range(0, digits, 4))
+
+
 def is_certificate(pem: str) -> bool:
     if not pem.startswith(CERT_HEADER):
         return False
@@ -44,24 +50,31 @@ def is_certificate(pem: str) -> bool:
 
 
 class CoordinatorIdentity:
-    """The coordinator's tunnel client key and self-signed certificate, created once per data directory."""
+    """A coordinator key and self-signed certificate, created once per data directory.
 
-    def __init__(self, directory: str):
+    Two are used: `coordinator-tunnel` (client certificate for worker tunnels) and `coordinator-control`
+    (server certificate for the HTTPS control API, which agents pin by fingerprint at enrollment).
+    """
+
+    def __init__(self, directory: str, stem: str = "coordinator-tunnel", common_name: str = "DIFA coordinator tunnel"):
         d = Path(directory)
         d.mkdir(parents=True, exist_ok=True)
-        self.key_path, self.cert_path = d / "coordinator-tunnel.key", d / "coordinator-tunnel.crt"
+        self.key_path, self.cert_path = d / f"{stem}.key", d / f"{stem}.crt"
         if not (self.key_path.exists() and self.cert_path.exists()):
-            self._create()
+            self._create(common_name)
         self.cert_pem = self.cert_path.read_text()
+        self.fingerprint = cert_fingerprint(self.cert_pem)
 
-    def _create(self) -> None:
+    def _create(self, common_name: str) -> None:
         key = ec.generate_private_key(ec.SECP256R1())
-        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "DIFA coordinator tunnel")])
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
         start = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)
+        san = [x509.DNSName("difa-coordinator"), x509.DNSName("localhost"),
+               x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]
         cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
                 .serial_number(x509.random_serial_number()).not_valid_before(start)
                 .not_valid_after(start + datetime.timedelta(days=825))
-                .add_extension(x509.SubjectAlternativeName([x509.DNSName("difa-coordinator")]), critical=False)
+                .add_extension(x509.SubjectAlternativeName(san), critical=False)
                 .sign(key, hashes.SHA256()))
         fd = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:

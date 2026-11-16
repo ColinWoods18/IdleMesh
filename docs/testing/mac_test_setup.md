@@ -126,9 +126,10 @@ If the macOS firewall is on (System Settings > Network > Firewall), the first ti
 macOS asks whether Python may accept incoming connections. Choose **Allow**. The coordinator uses TCP
 port **8765**.
 
-> **Trusted network only.** In this prototype, enrollment and heartbeats between agents and the
-> coordinator are plain HTTP with bearer tokens. Model traffic to the HP and the VM is mutual TLS.
-> Run the test on a home or lab network you control, not on public Wi-Fi.
+> **Encrypted channels.** The coordinator serves its API over HTTPS with a self-signed certificate. Each
+> device checks that certificate's fingerprint before sending its enrollment code, then accepts only that
+> certificate. Model traffic to the HP and the VM is mutual TLS. This is still a prototype: run the test
+> on a home or lab network you control, not on public Wi-Fi.
 
 ## 8. Start the coordinator
 
@@ -145,15 +146,26 @@ What the options do:
 - `--model-source coordinator` makes devices fetch their weights from this Mac rather than from Hugging
   Face.
 
-Expected output: a warning about the trusted network, then `Uvicorn running on http://0.0.0.0:8765`.
+Expected output:
+
+```
+control API: https://0.0.0.0:8765  certificate /Users/.../.local/share/difa/coordinator-control.crt
+coordinator fingerprint (SHA-256): 3f2a 9c1b ... (16 groups of four)
+Listening on 0.0.0.0: devices enroll with https and the fingerprint above. ...
+Uvicorn running on https://0.0.0.0:8765
+```
+
+The certificate is created on first start and kept in `~/.local/share/difa/`, so the fingerprint stays
+the same across restarts, including `--fresh`. `pilot.py code` also prints it with each enrollment code.
 
 Check from the Mac:
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8765/docs
+curl -s --cacert ~/.local/share/difa/coordinator-control.crt -o /dev/null -w "%{http_code}\n" https://127.0.0.1:8765/docs
 ```
 
-It prints `200`. The interactive API docs are at http://127.0.0.1:8765/docs.
+It prints `200`. Your browser will warn about the self-signed certificate if you open the API docs at
+https://127.0.0.1:8765/docs; you don't need the docs page for this test.
 
 ## 9. Create the group and sign in
 
@@ -162,6 +174,10 @@ In a second terminal, from the checkout:
 ```bash
 ~/.venvs/difa/bin/python scripts/pilot.py setup
 ```
+
+It connects to `https://127.0.0.1:8765` and trusts only the coordinator's own certificate. If you used an
+earlier version of this guide, delete `~/.local/share/difa/pilot-session.json` first, because that saved
+an `http://` address.
 
 It asks for a new owner passphrase of 15 characters or more. **Write down the recovery code it prints;
 it is shown once.** The helper saves your session in `~/.local/share/difa/pilot-session.json`. If a
@@ -176,11 +192,21 @@ Get a one-time code (valid for 10 minutes):
 ~/.venvs/difa/bin/python scripts/pilot.py code
 ```
 
-Enroll, replacing `CODE` with the first line printed. **The name must be exactly `Mac Studio`**: that is
-how the coordinator knows this device's stage runs on its own Metal GPU.
+It prints the code, then the coordinator fingerprint and the first 16 digits to pass on a device:
+
+```
+enr_....
+expires ...; give it to one device's `difa-agent enroll --code ...`
+coordinator fingerprint: 3f2a 9c1b ...
+  on the device: --coordinator-fingerprint 3f2a9c1b........  (or the whole fingerprint)
+```
+
+Enroll, replacing `CODE` and `FINGERPRINT` with what was printed. **The name must be exactly
+`Mac Studio`**: that is how the coordinator knows this device's stage runs on its own Metal GPU. If you
+enrolled the Mac before this change, delete `~/.local/share/difa/mac-agent.json` first.
 
 ```bash
-~/.cache/difa-target/release/difa-agent enroll --coordinator http://127.0.0.1:8765 --code CODE --name "Mac Studio" --memory-cap-gb 64 --backend-digest llama.cpp-v0.9.0 --state ~/.local/share/difa/mac-agent.json
+~/.cache/difa-target/release/difa-agent enroll --coordinator https://127.0.0.1:8765 --coordinator-fingerprint FINGERPRINT --code CODE --name "Mac Studio" --memory-cap-gb 64 --backend-digest llama.cpp-v0.9.0 --state ~/.local/share/difa/mac-agent.json
 ```
 
 ## 11. Run the Mac agent

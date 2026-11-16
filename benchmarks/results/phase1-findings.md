@@ -304,6 +304,43 @@ clean-stop path (`difa: drain`) has only been checked by the integration test so
 - Still to do:
   - the Test C owner-budget result against the strongest single-device baseline (needs the larger
     model, about 58 GB);
-  - an approved security path: the control channel is still plain HTTP;
+  - an approved security path. The control channel moved to HTTPS after this round (see below); what is
+    left is review, rotation, and the Phase 2 gRPC-over-mTLS contract;
   - the recorded hardware decision;
   - user review of measured waits (3–5 users).
+
+## Security: control channel on HTTPS with a pinned coordinator certificate (2026-11-16)
+
+Before this change, enrollment, heartbeats and weight downloads from the coordinator ran over plain
+HTTP. They carry the device token, and the enrollment code, which anyone on the network path could read
+or replay. Now:
+
+- **The coordinator serves the API over HTTPS.** `scripts/dev_server.py` creates a self-signed ECDSA
+  P-256 certificate (`coordinator-control.crt`, kept in the data directory, valid 825 days). It is
+  separate from the worker-tunnel client certificate. Plain HTTP (`--insecure-http`) is refused on
+  anything but loopback.
+- **Trust comes with the enrollment code.** The code reply carries the certificate's SHA-256 fingerprint,
+  which `pilot.py code` prints. `difa-agent enroll --coordinator https://… --coordinator-fingerprint X`
+  checks the server certificate against X during the TLS handshake, so the code is never sent to a server
+  with any other certificate. X needs at least 16 hex digits: matching 64 bits within a code's
+  10-minute life is not practical. On success the agent stores all 64 digits and accepts only that
+  certificate for heartbeats and for weight downloads from the coordinator.
+- **The agent refuses plain HTTP to any non-loopback coordinator,** including state files from earlier
+  enrollments, so devices must enroll again. Downloads from a model's origin use ordinary public-CA
+  HTTPS and never carry the device token.
+- **Tested end to end** (`tests/integration/test_control_tls.py`) with a real agent against a real HTTPS
+  coordinator:
+  - a wrong fingerprint fails, and the same code still works afterwards, which shows it was never sent;
+  - a 16-digit prefix typed in groups enrolls the device and pins the full fingerprint;
+  - heartbeats run over the pinned channel;
+  - a changed certificate stops heartbeats;
+  - `http://` to a LAN address is refused.
+
+**Still open on the security path.**
+- Neither the control certificate nor the tunnel certificates are rotated, and the agent does not
+  check expiry.
+- Browsers see a self-signed certificate. The spec's browser-trusted HTTPS route for members is a
+  separate Phase 1 feasibility item.
+- On Windows, the agent's state file is not yet restricted to the owner.
+- The spec's target remains gRPC over mutual TLS for agents (Phase 2).
+- An independent security review is still required.

@@ -24,3 +24,15 @@ def test_round_4_prediction_fails_the_target():
 
 def test_fit_needs_varied_lengths():
     assert "note" in pilot.prediction_check(runs(0.4, 50, [64, 64, 64]), {"per_token_ms": 50})
+
+
+def test_pilot_trusts_only_the_coordinator_control_certificate(tmp_path, monkeypatch):
+    import ssl
+
+    from difa.transport import CoordinatorIdentity
+    control = CoordinatorIdentity(str(tmp_path), "coordinator-control", "DIFA coordinator control")
+    monkeypatch.setenv("DIFA_CONTROL_CERT", str(control.cert_path))
+    assert pilot.verify("http://127.0.0.1:8765") is True
+    ctx = pilot.verify("https://127.0.0.1:8765")
+    assert isinstance(ctx, ssl.SSLContext) and ctx.verify_mode == ssl.CERT_REQUIRED and not ctx.check_hostname
+    assert ctx.cert_store_stats()["x509"] == 1  # only the coordinator's own certificate, no system CAs

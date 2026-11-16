@@ -67,6 +67,8 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
     app.state.tunnels = TunnelManager(CoordinatorIdentity(tunnel_dir))
     app.state.prefetch = {}  # group_id -> pending partition download before a deployment loads (FR 30)
     app.state.prefetch_errors = {}
+    app.state.control_fingerprint = (cert_fingerprint(open(settings.control_cert).read())
+                                     if settings.control_cert else None)
     app.state.path_rtt = {}  # device_id -> (mean ms through the worker tunnel, monotonic time measured)
     app.state.passwords = Passwords(settings.argon2_fast)
     app.state.login_attempts = {}
@@ -491,7 +493,10 @@ def register(app: FastAPI) -> None:
         with S(request).tx() as c:
             c.execute("INSERT INTO enrollment_codes VALUES (?,?,?,?,?,?)",
                       (eid, p.group_id, p.member_id, verifier(secret), iso(expires), None))
-        return {"code": f"{eid}.{secret}", "expires_at": iso(expires)}
+        out = {"code": f"{eid}.{secret}", "expires_at": iso(expires)}
+        if request.app.state.control_fingerprint:
+            out["coordinator_fingerprint"] = request.app.state.control_fingerprint
+        return out
 
     @app.post("/api/v1/devices/enroll", status_code=201, tags=["devices"])
     async def enroll(body: EnrollIn, request: Request):

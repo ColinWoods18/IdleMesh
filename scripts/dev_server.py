@@ -5,8 +5,12 @@ Defaults: loopback only, fake runtime. The database and the coordinator's tunnel
 
   --llamacpp         use the llama.cpp adapter with the Phase 1 build and models in ~/.cache/difa-phase1
                      (this Mac's own stage is "Mac Studio" unless DIFA_LLAMACPP_LOCAL_DEVICE says otherwise)
-  --host ADDRESS     listen on a LAN address so real devices can enroll. The control channel is still
-                     plain HTTP with bearer tokens in this prototype: use only on a network you trust.
+  --host ADDRESS     listen on a LAN address so real devices can enroll.
+  --insecure-http    serve plain HTTP instead of HTTPS (loopback only; tests and local tools)
+
+The control API is served over HTTPS with a self-signed certificate kept in the data directory
+(coordinator-control.crt). Its SHA-256 fingerprint is printed at startup and returned with every
+enrollment code; agents refuse to enroll with a coordinator presenting any other certificate.
   --model-source coordinator   devices prefetch their weights from this coordinator instead of the
                      model's origin (good for a LAN; FR 30)
 
@@ -26,7 +30,11 @@ parser.add_argument("--fresh", action="store_true", help="start from an empty de
 parser.add_argument("--llamacpp", action="store_true", help="use the llama.cpp adapter (Phase 1 build)")
 parser.add_argument("--host", default="127.0.0.1", help="listen address (default loopback only)")
 parser.add_argument("--model-source", choices=["origin", "coordinator"], default=None)
+parser.add_argument("--insecure-http", action="store_true", help="plain HTTP; allowed only on loopback")
 args = parser.parse_args()
+loopback = args.host in ("127.0.0.1", "::1", "localhost")
+if args.insecure_http and not loopback:
+    sys.exit("--insecure-http is allowed only on loopback: device tokens would cross the network in clear text.")
 
 if args.llamacpp:
     phase1 = Path.home() / ".cache" / "difa-phase1"
@@ -36,12 +44,21 @@ if args.llamacpp:
     os.environ.setdefault("DIFA_LLAMACPP_LOCAL_DEVICE", "Mac Studio")
 if args.model_source:
     os.environ["DIFA_MODEL_SOURCE"] = args.model_source
-if args.host not in ("127.0.0.1", "::1", "localhost"):
-    print(f"WARNING: listening on {args.host}. Agent control traffic is plain HTTP in this prototype; worker "
-          "traffic is mutual TLS only for agents run with --tunnel-listen. Trusted networks only.", flush=True)
-
 data = Path(os.environ.get("DIFA_DATA_DIR", Path.home() / ".local" / "share" / "difa"))
 data.mkdir(parents=True, exist_ok=True)
+tls = {}
+if not args.insecure_http:
+    from difa.transport import CoordinatorIdentity, grouped  # noqa: E402
+
+    control = CoordinatorIdentity(str(data), "coordinator-control", "DIFA coordinator control")
+    os.environ["DIFA_CONTROL_CERT"] = str(control.cert_path)
+    os.environ.setdefault("DIFA_COOKIE_SECURE", "1")
+    tls = {"ssl_certfile": str(control.cert_path), "ssl_keyfile": str(control.key_path)}
+    print(f"control API: https://{args.host}:{args.port}  certificate {control.cert_path}", flush=True)
+    print(f"coordinator fingerprint (SHA-256): {grouped(control.fingerprint)}", flush=True)
+if not loopback:
+    print(f"Listening on {args.host}: devices enroll with https and the fingerprint above. Worker traffic is "
+          "mutual TLS for agents run with --tunnel-listen.", flush=True)
 db = data / "dev.sqlite3"
 if args.fresh:
     for suffix in ("", "-wal", "-shm"):
@@ -50,4 +67,4 @@ os.environ.setdefault("DIFA_DB", str(db))
 
 import uvicorn  # noqa: E402
 
-uvicorn.run("difa.api.app:app_from_env", factory=True, host=args.host, port=args.port, log_level="info")
+uvicorn.run("difa.api.app:app_from_env", factory=True, host=args.host, port=args.port, log_level="info", **tls)

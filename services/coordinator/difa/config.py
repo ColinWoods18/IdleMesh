@@ -12,6 +12,9 @@ class Settings:
     db_path: str = field(default_factory=lambda: os.environ.get("DIFA_DB", "difa.sqlite3"))
     # Coordinator tunnel key and certificate; defaults to the database's directory.
     tunnel_dir: str | None = field(default_factory=lambda: os.environ.get("DIFA_TUNNEL_DIR"))
+    # Certificate the control API is served with over HTTPS (set by scripts/dev_server.py). Its fingerprint
+    # is returned with every enrollment code so agents can pin it before sending the code.
+    control_cert: str | None = field(default_factory=lambda: os.environ.get("DIFA_CONTROL_CERT"))
     # Sessions (spec 6.5)
     session_idle_s: int = 30 * 60
     session_absolute_s: int = 12 * 3600

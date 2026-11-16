@@ -44,8 +44,11 @@ Start the coordinator on loopback (database in `~/.local/share/difa/`), then, in
 run the smoke test, which enrolls three simulated reference devices with real agent processes:
 
 ```bash
-~/.venvs/difa/bin/python scripts/dev_server.py --fresh
+~/.venvs/difa/bin/python scripts/dev_server.py --fresh --insecure-http
 ```
+
+(`--insecure-http` is allowed only on loopback. Without it the coordinator serves HTTPS with its own
+pinned certificate, as in the three-machine test.)
 
 ```bash
 (cd agents/device && CARGO_TARGET_DIR=~/.cache/difa-target cargo build) && ~/.venvs/difa/bin/python scripts/smoke.py
@@ -104,8 +107,9 @@ Step-by-step guides for the three-machine test, including every install, are in 
 and [ubuntu_test_setup.md](docs/testing/ubuntu_test_setup.md). `scripts/pilot.py` drives the coordinator
 for the test. The summary below is the short version.
 
-On the Mac, start the coordinator on its LAN address with the llama.cpp adapter, sign in at
-http://127.0.0.1:8765/docs, create the group, and create one enrollment code per device:
+On the Mac, start the coordinator on its LAN address with the llama.cpp adapter. It serves HTTPS and
+prints its certificate fingerprint. Create the group with `scripts/pilot.py setup`, and one enrollment
+code per device with `scripts/pilot.py code`, which prints the fingerprint again:
 
 ```bash
 ~/.venvs/difa/bin/python scripts/dev_server.py --fresh --llamacpp --host 0.0.0.0 --model-source coordinator
@@ -124,7 +128,7 @@ cd agents/device && cargo build --release
 ```
 
 ```bash
-./target/release/difa-agent enroll --coordinator http://MAC_LAN_IP:8765 --code CODE --name "Ubuntu VM" --memory-cap-gb 8 --backend-digest llama.cpp-v0.9.0 --state ~/difa/agent.json
+./target/release/difa-agent enroll --coordinator https://MAC_LAN_IP:8765 --coordinator-fingerprint FINGERPRINT --code CODE --name "Ubuntu VM" --memory-cap-gb 8 --backend-digest llama.cpp-v0.9.0 --state ~/difa/agent.json
 ```
 
 ```bash
@@ -173,8 +177,9 @@ spec 10 device-loss handling.
 
 Prototype deviations to close before Phase 2 sign-off:
 
-- Agent control transport is HTTP/JSON with a device token, not gRPC over mutual TLS (the inference data path
-  to remote workers is already mutual TLS). Certificates are pinned with no rotation or expiry handling yet.
+- Agent control transport is HTTPS/JSON with a device token and the coordinator certificate pinned at
+  enrollment, not gRPC over mutual TLS (the inference data path to remote workers is mutual TLS).
+  Certificates are pinned with no rotation or expiry handling yet; browsers see a self-signed certificate.
 - Stored content is not yet encrypted with the group data key; no-history mode, retention purge jobs,
   and backups are not implemented.
 - The client-disconnect grace window, deadline-aware rejection (FR 32), validated profiles (FR 33),

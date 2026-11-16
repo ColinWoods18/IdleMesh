@@ -16,12 +16,12 @@ research backend (spec 6.2).
 
 | Machine | Role | Runs | Inbound port | Guide |
 |---|---|---|---|---|
-| Mac Studio | Coordinator, and the Metal stage | coordinator, `llama-server`, agent (no worker) | 8765 (HTTP, from HP and VM) | [mac_test_setup.md](mac_test_setup.md) |
+| Mac Studio | Coordinator, and the Metal stage | coordinator, `llama-server`, agent (no worker) | 8765 (HTTPS, from HP and VM) | [mac_test_setup.md](mac_test_setup.md) |
 | HP EliteBook (Windows) | CPU stage | agent, `ggml-rpc-server` on loopback | 50100 (mTLS, from the Mac only) | [windows_test_setup.md](windows_test_setup.md) |
 | Ubuntu VM | CPU stage | agent, `ggml-rpc-server` on loopback | 50100 (mTLS, from the Mac only) | [ubuntu_test_setup.md](ubuntu_test_setup.md) |
 
 ```
-               HTTP 8765: enroll, heartbeats, weight download (trusted LAN only)
+      HTTPS 8765 (pinned certificate): enroll, heartbeats, weight download
   HP agent  ───────────────────────────────►  Mac coordinator  ◄──────────────  VM agent
   HP worker ◄═══ mTLS 50100 (model traffic) ═══  llama-server  ═══ mTLS 50100 ═══► VM worker
                                               + Metal stage
@@ -36,7 +36,9 @@ All three must use **llama.cpp v0.9.0** and the same DIFA commit (`git pull` on 
 2. **HP and VM**, in any order or in parallel: install, build, and network checks, up to the "Enroll"
    section of each guide.
 3. **Enroll and start agents.** For each device, run `pilot.py code` on the Mac, then enroll on the device
-   within 10 minutes, then start its agent. Do the Mac first (sections 10 and 11), then the HP, then the
+   within 10 minutes with `https://MAC_IP:8765` and the `--coordinator-fingerprint` it prints, then start
+   its agent. **Devices enrolled before the HTTPS change must enroll again:** delete their `agent.json`
+   first. Do the Mac first (sections 10 and 11), then the HP, then the
    VM.
 4. Continue below.
 
@@ -194,6 +196,7 @@ comparison isn't supported end to end yet. Measured on one Mac, the tunnel costs
 | `rtt measurement failed` after a stage in `as loaded` | The tunnel was reachable but the worker did not answer RPC commands in time, often because it was still busy with a previous client. The deployment still loads, using the heartbeat round trip for that stage. Run `pilot deploy` again. |
 | `PARTITION_MISMATCH` | The weights llama.cpp loaded on a device differ from the plan. Send the adapter log. This is a finding, not a setup error. |
 | `Session expired` | Run `pilot login`. |
+| `pilot` fails with a certificate or connection error | The saved session points at `http://`. Delete `~/.local/share/difa/pilot-session.json` and run `pilot setup` against the `--fresh` coordinator. |
 | A device agent prints `device authorization revoked` and exits | The coordinator was restarted with `--fresh`, which forgets every device. Delete that device's `agent.json` and enroll again. |
 
 ## Ending the test

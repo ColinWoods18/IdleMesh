@@ -154,21 +154,24 @@ device to sleep after" to **Never**, and keep the charger connected. You can res
 
 ## 8. Enroll the HP
 
-On the **Mac**, get a one-time code (valid for 10 minutes):
+On the **Mac**, get a one-time code (valid for 10 minutes). It also prints the coordinator fingerprint:
 
 ```bash
 ~/.venvs/difa/bin/python scripts/pilot.py code
 ```
 
-On the **HP**, replacing `MAC_IP` and `CODE`:
+On the **HP**, replacing `MAC_IP`, `FINGERPRINT` (the 16 digits after `--coordinator-fingerprint`) and
+`CODE`:
 
 ```powershell
-& "$env:USERPROFILE\difa\target\release\difa-agent.exe" enroll --coordinator http://MAC_IP:8765 --code CODE --name "HP EliteBook" --memory-cap-gb 8 --allow-battery --backend-digest llama.cpp-v0.9.0 --state "$env:USERPROFILE\difa\agent.json"
+& "$env:USERPROFILE\difa\target\release\difa-agent.exe" enroll --coordinator https://MAC_IP:8765 --coordinator-fingerprint FINGERPRINT --code CODE --name "HP EliteBook" --memory-cap-gb 8 --allow-battery --backend-digest llama.cpp-v0.9.0 --state "$env:USERPROFILE\difa\agent.json"
 ```
 
 What the options do:
 - `--memory-cap-gb 8` is the most memory the HP may contribute. The agent kills the worker if it goes
   over. The test model needs well under 1 GB, so any value from 2 to 8 works.
+- `--coordinator-fingerprint` is checked before the code is sent: the agent talks only to a coordinator
+  presenting that certificate, and pins it for all later traffic.
 - `--allow-battery` is **needed on Windows for now**. The agent can't read Windows power status yet,
   reports it as "unknown", and treats unknown like battery, which would pause contribution. Keep the
   charger connected instead.
@@ -246,6 +249,8 @@ That is the tunnel refusing a stranger, as it should.
 | Symptom | Likely cause and fix |
 |---|---|
 | `cannot reach coordinator` | Check `Test-NetConnection MAC_IP -Port 8765`. Check the Mac's firewall and any VPN. |
+| `certificate does not match the fingerprint (the code was not sent)` | The fingerprint was mistyped, or something other than your coordinator answered at that address. Check the digits against `pilot.py code` on the Mac. The code is still valid. |
+| `refusing plain HTTP to a coordinator on the network` | Use `https://MAC_IP:8765` with `--coordinator-fingerprint`. An `agent.json` enrolled with `http://` must be deleted and enrolled again. |
 | `enrollment failed (404 ...)` | The code expired (10 minutes) or was already used. Get a new one with `pilot.py code`. |
 | `heartbeat ok: paused=true` | You enrolled without `--allow-battery`. Delete `agent.json`, get a new code, and enroll again with it. |
 | `tunnel cannot listen on 0.0.0.0:50100` | Another program uses the port. Pick another port, and update both the agent flags and the firewall rule. |

@@ -97,10 +97,11 @@ Write the LAN-facing one down as **VM_IP**. Then check that the Mac's coordinato
 replacing `MAC_IP`:
 
 ```bash
-curl -s -o /dev/null -w "%{http_code}\n" http://MAC_IP:8765/docs
+curl -sk -o /dev/null -w "%{http_code}\n" https://MAC_IP:8765/docs
 ```
 
-It prints `200`. Anything else means:
+It prints `200`. (`-k` skips certificate checks for this reachability test only; the agent checks the
+coordinator's fingerprint itself.) Anything else means:
 - the coordinator isn't running;
 - the Mac's firewall blocked Python; or
 - the VM's network mode doesn't reach the LAN.
@@ -117,17 +118,18 @@ never reachable from the network.
 
 ## 6. Enroll the VM
 
-On the **Mac**, get a one-time code (valid for 10 minutes):
+On the **Mac**, get a one-time code (valid for 10 minutes). It also prints the coordinator fingerprint:
 
 ```bash
 ~/.venvs/difa/bin/python scripts/pilot.py code
 ```
 
-On the **VM**, replacing `MAC_IP` and `CODE`. Keep `--memory-cap-gb` at least 2 GB below the VM's
+On the **VM**, replacing `MAC_IP`, `FINGERPRINT` (the 16 digits after `--coordinator-fingerprint`) and
+`CODE`. Keep `--memory-cap-gb` at least 2 GB below the VM's
 memory.
 
 ```bash
-~/difa/I4A/agents/device/target/release/difa-agent enroll --coordinator http://MAC_IP:8765 --code CODE --name "Ubuntu VM" --memory-cap-gb 6 --backend-digest llama.cpp-v0.9.0 --state ~/difa/agent.json
+~/difa/I4A/agents/device/target/release/difa-agent enroll --coordinator https://MAC_IP:8765 --coordinator-fingerprint FINGERPRINT --code CODE --name "Ubuntu VM" --memory-cap-gb 6 --backend-digest llama.cpp-v0.9.0 --state ~/difa/agent.json
 ```
 
 Expected output: `enrolled device dev_... as 'Ubuntu VM'; state saved to /home/.../difa/agent.json`. The
@@ -202,6 +204,8 @@ the firewall rule.
 | Symptom | Likely cause and fix |
 |---|---|
 | `cannot reach coordinator` | Run the `curl ... /docs` check. Check the VM's network mode and the Mac's firewall. |
+| `certificate does not match the fingerprint (the code was not sent)` | The fingerprint was mistyped, or something other than your coordinator answered at that address. Check the digits against `pilot.py code` on the Mac. The code is still valid. |
+| `refusing plain HTTP to a coordinator on the network` | Use `https://MAC_IP:8765` with `--coordinator-fingerprint`. An `agent.json` enrolled with `http://` must be deleted and enrolled again. |
 | `enrollment failed (404 ...)` | The code expired (10 minutes) or was already used. Get a new one with `pilot.py code`. |
 | `nc` from the Mac times out | The VM is behind NAT, or ufw is blocking. Use bridged networking or a port forward, and check `sudo ufw status`. |
 | Deployment fails with `TUNNEL_FAILED` | `--tunnel-advertise` has an address the Mac can't reach, or the firewall rule uses the wrong MAC_IP. |

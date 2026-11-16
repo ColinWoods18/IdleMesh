@@ -1,8 +1,10 @@
 //! difa-agent: enrolls a device with a one-time code, then heartbeats with probed capabilities and
-//! the locally enforced contribution state. Prototype control transport is HTTPS/JSON with a device
-//! token; the spec's gRPC over mutual TLS replaces it in Phase 2. The inference data path to a remote
-//! worker already runs over mutual TLS (see tunnel.rs).
+//! the locally enforced contribution state. Control transport is HTTPS/JSON with a device token and
+//! the coordinator's certificate pinned at enrollment (see control.rs); the spec's gRPC over mutual
+//! TLS replaces it in Phase 2. The inference data path to a remote worker runs over mutual TLS (see
+//! tunnel.rs).
 
+mod control;
 mod policy;
 mod prefetch;
 mod probe;
@@ -31,8 +33,13 @@ struct Cli {
 enum Cmd {
     /// Enroll this device using a one-time code from the DIFA app.
     Enroll {
+        /// The coordinator's address: https://ADDRESS:8765 (plain http only to this machine's loopback).
         #[arg(long)]
         coordinator: String,
+        /// SHA-256 fingerprint of the coordinator's certificate, as shown with the enrollment code (at
+        /// least the first 16 hex digits). The code is sent only to a server presenting that certificate.
+        #[arg(long)]
+        coordinator_fingerprint: Option<String>,
         #[arg(long)]
         code: String,
         #[arg(long)]
@@ -132,6 +139,9 @@ struct State {
     /// The coordinator's tunnel client certificate, pinned at enrollment.
     #[serde(default)]
     coordinator_cert_pem: Option<String>,
+    /// Full SHA-256 of the coordinator's control (HTTPS) certificate, pinned at enrollment.
+    #[serde(default)]
+    coordinator_fingerprint: Option<String>,
 }
 
 fn default_digest() -> String {
@@ -192,13 +202,14 @@ fn save_state(path: &Path, state: &State) -> std::io::Result<()> {
     Ok(())
 }
 
-fn client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder().timeout(Duration::from_secs(10)).build().expect("http client")
-}
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[allow(clippy::too_many_arguments)]
-fn enroll(coordinator: String, code: String, name: String, memory_cap_gb: f64, allow_battery: bool, state: PathBuf,
-          simulate: Option<String>, backend_digest: String) -> Result<(), String> {
+fn enroll(coordinator: String, fingerprint: Option<String>, code: String, name: String, memory_cap_gb: f64,
+          allow_battery: bool, state: PathBuf, simulate: Option<String>, backend_digest: String)
+          -> Result<(), String> {
+    // Check the address and fingerprint before probing or generating keys, so mistakes fail fast.
+    let (http, seen) = control::client(&coordinator, fingerprint.as_deref(), CONTROL_TIMEOUT, CONTROL_TIMEOUT)?;
     let p = take_probe(&simulate)?;
     let owner_policy = OwnerPolicy {
         memory_cap_bytes: (memory_cap_gb * GB) as u64,
@@ -215,7 +226,14 @@ fn enroll(coordinator: String, code: String, name: String, memory_cap_gb: f64, a
         "policy": owner_policy,
     });
     let url = format!("{}/api/v1/devices/enroll", coordinator.trim_end_matches('/'));
-    let resp = client().post(url).json(&body).send().map_err(|e| format!("cannot reach coordinator: {e}"))?;
+    let resp = http.post(url).json(&body).send().map_err(|e| {
+        if fingerprint.is_some() && seen.lock().unwrap().is_none() && e.is_connect() {
+            format!("cannot reach coordinator, or its certificate does not match the fingerprint (the code was not \
+                     sent): {e}")
+        } else {
+            format!("cannot reach coordinator: {e}")
+        }
+    })?;
     let status = resp.status();
     let reply: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
     if !status.is_success() {
@@ -232,6 +250,7 @@ fn enroll(coordinator: String, code: String, name: String, memory_cap_gb: f64, a
         tunnel_cert_pem: Some(identity.cert_pem),
         tunnel_key_pem: Some(identity.key_pem),
         coordinator_cert_pem: reply["coordinator_cert_pem"].as_str().map(str::to_string),
+        coordinator_fingerprint: seen.lock().unwrap().clone(),
     };
     save_state(&state, &st).map_err(|e| e.to_string())?;
     println!("enrolled device {} as '{}'; state saved to {}", st.device_id, st.name, state.display());
@@ -270,7 +289,9 @@ fn secure_worker(mut w: WorkerConfig, st: &State, opts: &RunOptions) -> Result<W
 fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
     let raw = std::fs::read(&state_path).map_err(|e| format!("cannot read {}: {e}", state_path.display()))?;
     let st: State = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
-    let http = client();
+    let (http, _) = control::client(&st.coordinator, st.coordinator_fingerprint.as_deref(), CONTROL_TIMEOUT,
+                                    CONTROL_TIMEOUT)
+        .map_err(|e| format!("{e} (enroll this device again with the coordinator's https address)"))?;
     let url = format!("{}/api/v1/devices/{}/heartbeat", st.coordinator.trim_end_matches('/'), st.device_id);
     let mut effective = st.owner_policy.clone();
     let mut battery_hold = false;
@@ -302,7 +323,8 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
         Worker::new(w)
     });
     let mut prefetcher = prefetch::Prefetcher::new(opts.cache_dir.clone(), opts.licenses.clone(), prefetch::Source {
-        coordinator: st.coordinator.clone(), device_token: st.device_token.clone() });
+        coordinator: st.coordinator.clone(), device_token: st.device_token.clone(),
+        fingerprint: st.coordinator_fingerprint.clone() });
     // Stop the worker on SIGTERM or Ctrl-C so no inference process outlives its supervisor.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = stop.clone();
@@ -386,8 +408,10 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
 
 fn main() {
     let result = match Cli::parse().cmd {
-        Cmd::Enroll { coordinator, code, name, memory_cap_gb, allow_battery, state, simulate, backend_digest } => {
-            enroll(coordinator, code, name, memory_cap_gb, allow_battery, state, simulate, backend_digest)
+        Cmd::Enroll { coordinator, coordinator_fingerprint, code, name, memory_cap_gb, allow_battery, state, simulate,
+                      backend_digest } => {
+            enroll(coordinator, coordinator_fingerprint, code, name, memory_cap_gb, allow_battery, state, simulate,
+                   backend_digest)
         }
         Cmd::Run { state, beats, worker_bin, worker_host, worker_port, worker_threads, decode_probe_bench,
                    decode_probe_model, decode_probe_catalog, tunnel_listen, tunnel_advertise,

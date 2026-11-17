@@ -300,7 +300,8 @@ clean-stop path (`difa: drain`) has only been checked by the integration test so
   - valid cross-platform execution (macOS Metal, Windows CPU, Linux CPU);
   - actual remote computation through authenticated tunnels;
   - owner limits enforced (Round 2 and the integration tests);
-  - a predicted per-token time within 30 percent on real Wi-Fi links (and within 7 percent in Round 6).
+  - a predicted per-token time within 30 percent on real links: Rounds 5–7, −6 to −22 percent by bench fit, too
+    fast when the Mac is on Wi-Fi.
 - Still to do:
   - the Test C owner-budget result against the strongest single-device baseline (needs the larger
     model, about 58 GB);
@@ -398,3 +399,58 @@ uses heartbeat RTT. Fixes, both small:
   stall no longer moves the fallback RTT.
 - `tests/integration/test_control_tls.py` checks the header, and checks that the reported RTT over HTTPS
   on loopback stays under 20 ms. The agent must be rebuilt on the HP and the VM.
+
+## Round 7: three physical machines, Mac and HP on Wi-Fi, VM wired (2026-11-17)
+
+Raw results: `pilot-3machine-20261117T205900Z.json`, plus llama-server's timings from the adapter log
+`dep_16e9d6c3e9067b24`. Network: `Mac=wifi HP=wifi VM=ethernet`.
+
+**The heartbeat fix (48cac9a) was not in this run.** The coordinator ran from a checkout still at 2a9dea8,
+and heartbeat RTTs show the Round 6 inflation again: 191.1 ms for the HP and 79.9 ms for the VM. So this
+run checks only the HTTPS channel and tunnel-timed prediction again. The heartbeat fix is still to be
+run on the physical machines.
+
+| Stage | Heartbeat RTT (no fix) | Tunnel RTT mean (median, min–p90), 16 samples |
+|---|---:|---:|
+| HP EliteBook, layer 0 | 191.1 ms | 19.30 ms (19.43, 13.34–24.62) |
+| Ubuntu VM, layer 1 (now wired) | 79.9 ms | 9.98 ms (8.97, 5.90–12.32) |
+| Mac Studio, layers 2–23 + output | local | local |
+
+| | ms/token | tokens/s | Error against measured |
+|---|---:|---:|---:|
+| Planned (heartbeat RTT) | 286.98 | 3.5 | +476% |
+| As loaded (tunnel RTT) | 40.43 | 24.7 | −19% (bench fit) / −26% (llama.cpp) |
+| Measured, bench fit across requests | 49.83 | 20.1 | |
+| Measured, llama.cpp token-weighted (median 49.4, p10–p90 40.7–90.5) | 54.4 | 18.4 | |
+
+All 20 requests completed, with both remote stages on mutual TLS. The prediction is inside the 30
+percent target, but only just on llama.cpp's own timing. The token-weighted figure includes two slow
+requests: the first, at 97.7 ms per token (the warm-up `pilot ask` before the bench), and one 13-token
+request at 120.9 ms per token. The bench fit's median-like slope is the fairer comparison.
+
+**The prediction is consistently too fast when the Mac is on Wi-Fi.**
+
+| Round | Mac link | Error (bench fit) |
+|---|---|---:|
+| 5 | Wi-Fi | −22% |
+| 6 | Ethernet | −6% |
+| 7 | Wi-Fi | −19% |
+
+The tunnel RTT is measured from the Mac, so it already includes the Mac's own Wi-Fi hop. What the model
+leaves out is the per-token traffic term: `link_mbps` is never measured, so the
+`bytes_per_token_per_remote` term is dropped (see `latency_budget.basis`). With the Mac on Wi-Fi, the
+traffic to and from both remote stages shares one radio, which would add time that grows with traffic.
+The 16 idle RTT samples carry almost no data, so they cannot show it. This is a hypothesis, not yet
+isolated.
+
+Next step: measure each stage's effective link throughput, for example from the bytes the tunnel
+forwarder sends during model load and the load time, and fill `link_mbps` so the traffic term counts. The
+per-token traffic figure (0.62 MB, from loopback) should also be measured again for a one-layer CPU
+stage.
+
+**Other observations.**
+- The Mac's compute estimate rose from 5.07 to 6.24 ms. Its decode probe measured slower this time,
+  likely because other load was on the Mac.
+- No drain happened in this run, so the clean-stop path has still not been checked on real devices.
+- The VM moved to Ethernet. Its tunnel RTT (10.0 ms) barely changed from Wi-Fi (9.3–10.3 ms). So most
+  of the VM's round trip is the routed path between subnets, or the VM host, not its own radio.

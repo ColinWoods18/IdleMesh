@@ -1,12 +1,17 @@
 # DIFA prototype
 
 Phase 0 prototype of **Distributed Inference For All**, built against
-`DIFA_Product_Specification_v0_3.docx` and `DIFA_Design_Whitepaper_v0_3.docx` in the parent folder.
+`DIFA_Product_Specification_v0_3.docx` and `DIFA_Design_Whitepaper_v0_3.docx` in the parent folder
+(not in git; summaries in [docs/spec/](docs/spec/)).
 
 > **The inference runtime is fake.** It streams deterministic text and reports which devices it
 > "ran" on. Everything here exercises the product contracts (groups, privacy, queueing,
 > placement, owner controls, API); none of it is evidence that distributed inference works.
 > That evidence is Phase 1.
+
+**Resuming the project?** Start with [docs/HANDOFF.md](docs/HANDOFF.md): current state, Phase 1 gate status,
+backlog, and how to resume. [docs/DECISIONS.md](docs/DECISIONS.md) records why things are the way they
+are, and [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) covers machines, paths, versions, and gotchas.
 
 ## What is here
 

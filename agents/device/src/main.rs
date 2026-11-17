@@ -297,6 +297,7 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
     let mut battery_hold = false;
     let mut lease = Lease::new(Duration::from_secs(30));
     let mut last_rtt = 0.0;
+    let mut rtt_window = control::RttWindow::new(5);
     let mut assignment: Option<serde_json::Value> = None;
     let mut count = 0u64;
     let bandwidth = if st.simulate.is_some() { 0.0 } else { probe::measure_bandwidth() };
@@ -367,7 +368,9 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
             let started = Instant::now();
             match http.post(&url).bearer_auth(&st.device_token).json(&body).send() {
                 Ok(resp) if resp.status().is_success() => {
-                    last_rtt = (started.elapsed().as_secs_f64() * 1000.0 * 10.0).round() / 10.0;
+                    let server_ms = control::server_time_ms(
+                        resp.headers().get("server-timing").and_then(|v| v.to_str().ok()));
+                    last_rtt = rtt_window.push(started.elapsed().as_secs_f64() * 1000.0, server_ms);
                     let reply: HeartbeatReply = resp.json().map_err(|e| e.to_string())?;
                     effective = merge(&st.owner_policy, &reply.policy);
                     paused = effective_paused(&effective, p.power, &mut battery_hold);

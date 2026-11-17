@@ -300,7 +300,7 @@ clean-stop path (`difa: drain`) has only been checked by the integration test so
   - valid cross-platform execution (macOS Metal, Windows CPU, Linux CPU);
   - actual remote computation through authenticated tunnels;
   - owner limits enforced (Round 2 and the integration tests);
-  - a predicted per-token time within 30 percent on real Wi-Fi links.
+  - a predicted per-token time within 30 percent on real Wi-Fi links (and within 7 percent in Round 6).
 - Still to do:
   - the Test C owner-budget result against the strongest single-device baseline (needs the larger
     model, about 58 GB);
@@ -344,3 +344,57 @@ or replay. Now:
 - On Windows, the agent's state file is not yet restricted to the owner.
 - The spec's target remains gRPC over mutual TLS for agents (Phase 2).
 - An independent security review is still required.
+
+## Round 6: three physical machines with the HTTPS control channel (2026-11-16)
+
+Raw results: `pilot-3machine-20261116T233456Z.json` (commit 40e80cc), plus llama-server's timings from
+the adapter log `dep_a014e07679c9f018`. Same machines, model and llama.cpp build. Network:
+`Mac=ethernet HP=wifi VM=wifi` (the Mac was on Wi-Fi in Round 5).
+
+**The HTTPS control channel works on all three operating systems.** Every device enrolled again over
+HTTPS with a fingerprint-pinned coordinator certificate. Heartbeats, prefetch and deployment all ran over
+it. 20 of 20 requests completed, with both remote stages on mutual TLS.
+
+| Stage | Heartbeat RTT (now over HTTPS) | Tunnel RTT mean (median, min–p90), 16 samples |
+|---|---:|---:|
+| HP EliteBook, layer 0 | 190.6 ms | 17.09 ms (15.04, 11.50–25.92) |
+| Ubuntu VM, layer 1 | 82.5 ms | 10.25 ms (7.35, 4.71–25.20) |
+| Mac Studio, layers 2–23 + output | local | local |
+
+| | ms/token | tokens/s | Error against measured |
+|---|---:|---:|---:|
+| Planned (heartbeat RTT) | 287.95 | 3.5 | +616% |
+| As loaded (tunnel RTT) | 37.28 | 26.8 | −7% (llama.cpp) / −6% (bench fit) |
+| Measured, llama.cpp token-weighted (median 39.2, p10–p90 34.1–49.7) | 40.2 | 24.9 | |
+| Measured, bench fit across requests | 39.78 | 25.1 | |
+
+**The latency model is within 7 percent of the trace.** That compares with −18 to −22 percent in Round
+5. Decode rose from about 22 to 25 tokens/s with the Mac on Ethernet. The tunnel round trips were almost
+unchanged, so most of the gain is likely on the Mac's side of each hop. One run is not enough to
+separate that from Wi-Fi variation.
+
+**Heartbeat RTT is now useless as a network estimate.** It rose from 17–48 ms to 83–191 ms. The
+cause:
+- uvicorn closes idle keep-alive connections after 5 seconds, which equals the heartbeat interval;
+- so nearly every heartbeat opens a new TCP connection and a new TLS handshake, with an ECDSA
+  signature;
+- the agent times the whole request.
+
+It did no harm to placement, because every remote stage was re-measured through its tunnel before load.
+But the first plan's prediction (288 ms/token) is meaningless, and the planner's latency score still
+uses heartbeat RTT. Fixes, both small:
+1. Keep control connections open longer than the heartbeat interval (for example
+   `timeout_keep_alive=30` in `scripts/dev_server.py`).
+2. Report the time of the HTTP request on a warm connection, or a separate lightweight ping, rather than
+   connection setup.
+
+**Not exercised in this run:** owner-control drains (4a–4f) with the new clean stop.
+
+**Fixed after Round 6 (not yet run on the physical machines).**
+- `scripts/dev_server.py` now keeps idle control connections open for 30 seconds
+  (`CONTROL_KEEP_ALIVE_S`), so heartbeats every 5 seconds reuse one TLS connection.
+- The coordinator adds `Server-Timing: app;dur=<ms>` to heartbeat replies only. The agent subtracts that
+  from the request time and reports the median of its last five heartbeats. One cold connection or Wi-Fi
+  stall no longer moves the fallback RTT.
+- `tests/integration/test_control_tls.py` checks the header, and checks that the reported RTT over HTTPS
+  on loopback stays under 20 ms. The agent must be rebuilt on the HP and the VM.

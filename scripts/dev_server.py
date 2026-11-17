@@ -67,4 +67,9 @@ os.environ.setdefault("DIFA_DB", str(db))
 
 import uvicorn  # noqa: E402
 
-uvicorn.run("difa.api.app:app_from_env", factory=True, host=args.host, port=args.port, log_level="info", **tls)
+from difa.config import CONTROL_KEEP_ALIVE_S  # noqa: E402
+
+# Keep idle connections open well past the 5-second heartbeat interval. With uvicorn's default (5 s) nearly
+# every heartbeat paid a new TCP connection and TLS handshake (Phase 1 Round 6).
+uvicorn.run("difa.api.app:app_from_env", factory=True, host=args.host, port=args.port, log_level="info",
+            timeout_keep_alive=CONTROL_KEEP_ALIVE_S, **tls)

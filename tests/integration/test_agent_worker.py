@@ -16,7 +16,7 @@ import pytest
 import uvicorn
 
 from difa.api.app import create_app
-from difa.config import Settings
+from difa.config import CONTROL_KEEP_ALIVE_S, Settings
 from difa.runtime.llamacpp import LlamaCppRuntime
 
 WORK = Path.home() / ".cache" / "difa-phase1"
@@ -54,7 +54,8 @@ def coordinator(tmp_path):
     port = free_port()
     rt = LlamaCppRuntime(str(BIN), str(MODELS), "Mac Studio", {}, log_dir=str(tmp_path))
     app = create_app(Settings(db_path=str(tmp_path / "difa.sqlite3")), rt)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
+                                           timeout_keep_alive=CONTROL_KEEP_ALIVE_S))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     until(lambda: server.started, 20, "coordinator start")

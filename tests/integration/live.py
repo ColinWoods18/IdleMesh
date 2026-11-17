@@ -10,7 +10,7 @@ import httpx
 import uvicorn
 
 from difa.api.app import create_app
-from difa.config import Settings
+from difa.config import CONTROL_KEEP_ALIVE_S, Settings
 
 WORK = Path.home() / ".cache" / "difa-phase1"
 BIN = WORK / "llama.cpp" / "build" / "bin"
@@ -45,7 +45,8 @@ def coordinator(tmp_path, runtime):
     """Serve a coordinator on a free loopback port; yields (base_url, app)."""
     port = free_port()
     app = create_app(Settings(db_path=str(tmp_path / "difa.sqlite3")), runtime)
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
+                                           timeout_keep_alive=CONTROL_KEEP_ALIVE_S))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
     until(lambda: server.started, 20, "coordinator start")

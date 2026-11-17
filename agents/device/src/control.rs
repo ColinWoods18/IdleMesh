@@ -137,9 +137,66 @@ pub fn client(coordinator: &str, fingerprint: Option<&str>, connect: Duration, t
     Ok((c, seen))
 }
 
+/// The coordinator's own handling time from a `Server-Timing: app;dur=<ms>` header, or 0 if absent.
+pub fn server_time_ms(header: Option<&str>) -> f64 {
+    header
+        .and_then(|h| h.split([',', ';'])
+            .find_map(|p| p.trim().strip_prefix("dur=").and_then(|v| v.parse::<f64>().ok())))
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .unwrap_or(0.0)
+}
+
+/// Network round trip from recent heartbeats: each sample is the request time minus the coordinator's
+/// handling time, and the reported value is the median of the last few, so one slow heartbeat (a new
+/// TLS connection, a Wi-Fi stall) does not move the planner's fallback RTT.
+pub struct RttWindow {
+    samples: std::collections::VecDeque<f64>,
+    cap: usize,
+}
+
+impl RttWindow {
+    pub fn new(cap: usize) -> Self {
+        RttWindow { samples: std::collections::VecDeque::with_capacity(cap), cap }
+    }
+
+    pub fn push(&mut self, elapsed_ms: f64, server_ms: f64) -> f64 {
+        if self.samples.len() == self.cap {
+            self.samples.pop_front();
+        }
+        self.samples.push_back((elapsed_ms - server_ms).max(0.0));
+        self.median()
+    }
+
+    pub fn median(&self) -> f64 {
+        let mut v: Vec<f64> = self.samples.iter().copied().collect();
+        if v.is_empty() {
+            return 0.0;
+        }
+        v.sort_by(|a, b| a.total_cmp(b));
+        let m = v.len() / 2;
+        let x = if v.len() % 2 == 1 { v[m] } else { (v[m - 1] + v[m]) / 2.0 };
+        (x * 10.0).round() / 10.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heartbeat_rtt_excludes_server_time_and_outliers() {
+        assert_eq!(server_time_ms(Some("app;dur=12.50")), 12.5);
+        assert_eq!(server_time_ms(Some("db;dur=x, app;dur=3")), 3.0);
+        assert_eq!(server_time_ms(Some("app;dur=-4")), 0.0);
+        assert_eq!(server_time_ms(None), 0.0);
+        let mut w = RttWindow::new(5);
+        assert_eq!(w.push(190.0, 10.0), 180.0); // first request: new TLS connection
+        for _ in 0..4 {
+            w.push(22.0, 4.0);
+        }
+        assert_eq!(w.median(), 18.0);
+        assert_eq!(w.push(15.0, 20.0), 18.0); // never negative, and the cold sample has aged out
+    }
 
     #[test]
     fn fingerprints_are_normalized_and_bounded() {

@@ -15,7 +15,7 @@ import uvicorn
 from live import AGENT, PASS, free_port, until
 
 from difa.api.app import create_app
-from difa.config import Settings
+from difa.config import CONTROL_KEEP_ALIVE_S, Settings
 from difa.runtime.fake import FakeRuntime
 from difa.transport import CoordinatorIdentity
 
@@ -30,6 +30,7 @@ def tls_coordinator(tmp_path):
     app = create_app(Settings(db_path=str(tmp_path / "difa.sqlite3"), control_cert=str(control.cert_path),
                               argon2_fast=True, cookie_secure=True), FakeRuntime(0))
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
+                                           timeout_keep_alive=CONTROL_KEEP_ALIVE_S,
                                            ssl_certfile=str(control.cert_path), ssl_keyfile=str(control.key_path)))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
@@ -74,9 +75,20 @@ def test_agent_pins_the_coordinator_certificate(tls_coordinator, tmp_path):
     saved = json.loads(state.read_text())
     assert saved["coordinator_fingerprint"] == control.fingerprint  # full 64 digits pinned from now on
 
-    run = subprocess.run([str(AGENT), "run", "--state", str(state), "--beats", "2"], capture_output=True, text=True,
+    run = subprocess.run([str(AGENT), "run", "--state", str(state), "--beats", "3"], capture_output=True, text=True,
                          timeout=60)
-    assert run.returncode == 0 and run.stdout.count("heartbeat ok") == 2, run.stdout + run.stderr
+    assert run.returncode == 0 and run.stdout.count("heartbeat ok") == 3, run.stdout + run.stderr
+    # Reported RTT is the network's: server handling time is subtracted and kept connections avoid a TLS
+    # handshake per heartbeat (Round 6 saw 83-191 ms on Wi-Fi without this).
+    rtts = [float(line.rsplit("rtt=", 1)[1].rstrip("ms")) for line in run.stdout.splitlines() if "rtt=" in line]
+    assert rtts and rtts[-1] < 20, rtts
+    beat = c.post(f"/api/v1/devices/{saved['device_id']}/heartbeat",
+                  headers={"Authorization": f"Bearer {saved['device_token']}"},
+                  json={"capabilities": {"os": "linux", "arch": "x86_64", "backend_digest": "fake-runtime-0.1",
+                                         "formats": ["gguf"], "allocatable_bytes": 10**9,
+                                         "mem_bandwidth_gbps": 10, "rtt_ms": 1, "power": "ac"}})
+    assert beat.status_code == 200 and beat.headers["server-timing"].startswith("app;dur=")
+    assert "server-timing" not in c.get(f"/api/v1/groups/{g['group_id']}/devices").headers
     devs = c.get(f"/api/v1/groups/{g['group_id']}/devices").json()["devices"]
     assert [d["state"] for d in devs] == ["ready"]
 

@@ -79,7 +79,13 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
         length = request.headers.get("content-length")
         if length and int(length) > settings.max_body_bytes:
             return JSONResponse(errors.envelope("BODY_TOO_LARGE", "Request body exceeds 1 MiB."), 413)
-        return await call_next(request)
+        started = time.perf_counter()
+        response = await call_next(request)
+        if request.url.path.endswith("/heartbeat"):
+            # Agents subtract this from their measured round trip, so the RTT they report is the network's,
+            # not the coordinator's database write (spec 7.2 fallback input when no tunnel RTT is known).
+            response.headers["Server-Timing"] = f"app;dur={(time.perf_counter() - started) * 1000:.2f}"
+        return response
 
     register(app)
     compat.register(app)

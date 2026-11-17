@@ -7,6 +7,11 @@ def _env_float(name: str, default: float) -> float:
     return float(os.environ.get(name, default))
 
 
+# Seconds an idle control connection stays open. Must exceed the agents' heartbeat interval (5 s) so
+# heartbeats reuse one TLS connection instead of handshaking each time.
+CONTROL_KEEP_ALIVE_S = 30
+
+
 @dataclass
 class Settings:
     db_path: str = field(default_factory=lambda: os.environ.get("DIFA_DB", "difa.sqlite3"))

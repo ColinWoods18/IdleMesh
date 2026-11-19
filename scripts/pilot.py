@@ -31,7 +31,7 @@ import ssl
 
 import httpx
 
-DATA = Path(os.environ.get("DIFA_DATA_DIR", Path.home() / ".local" / "share" / "difa"))
+DATA = Path(os.environ.get("IDLEMESH_DATA_DIR", Path.home() / ".local" / "share" / "difa"))
 SESSION = DATA / "pilot-session.json"
 ROOT = Path(__file__).resolve().parents[1]
 GB = 1e9
@@ -54,7 +54,7 @@ def verify(base: str):
     """Trust exactly this coordinator's own control certificate (it is self-signed and on this machine)."""
     if not base.startswith("https://"):
         return True
-    cert = Path(os.environ.get("DIFA_CONTROL_CERT", DATA / "coordinator-control.crt"))
+    cert = Path(os.environ.get("IDLEMESH_CONTROL_CERT", DATA / "coordinator-control.crt"))
     if not cert.exists():
         sys.exit(f"{cert} not found: start the coordinator with scripts/dev_server.py first")
     ctx = ssl.create_default_context(cafile=str(cert))
@@ -65,7 +65,7 @@ def verify(base: str):
 def client(state: dict) -> httpx.Client:
     c = httpx.Client(base_url=state["base"], timeout=60, verify=verify(state["base"]))
     if state.get("cookie"):
-        c.cookies.set("difa_session", state["cookie"])
+        c.cookies.set("idlemesh_session", state["cookie"])
         c.headers["X-CSRF-Token"] = state["csrf"]
     return c
 
@@ -87,7 +87,7 @@ def sign_in(state: dict, passphrase: str) -> None:
     r = c.post("/api/v1/auth/login", json={"group_id": state["group_id"], "login": state["login"],
                                            "passphrase": passphrase})
     info = check(r)
-    state["cookie"], state["csrf"] = r.cookies.get("difa_session"), info["csrf_token"]
+    state["cookie"], state["csrf"] = r.cookies.get("idlemesh_session"), info["csrf_token"]
     save(state)
     print(f"signed in as {state['login']} to {state['group_id']}")
 
@@ -115,7 +115,7 @@ def cmd_login(a) -> None:
 def cmd_code(a) -> None:
     out = check(client(load()).post("/api/v1/devices/enrollment-codes"))
     print(out["code"])
-    print(f"expires {out['expires_at']}; give it to one device's `difa-agent enroll --code ...`")
+    print(f"expires {out['expires_at']}; give it to one device's `idlemesh-agent enroll --code ...`")
     fp = out.get("coordinator_fingerprint")
     if fp:
         print(f"coordinator fingerprint: {' '.join(fp[i:i + 4] for i in range(0, 64, 4))}")
@@ -284,7 +284,7 @@ def cmd_bench(a) -> None:
                if ok else None}
     summary.update(prediction_check(ok, (dep.get("explanation") or {}).get("latency_budget") or {}))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = ROOT / "benchmarks" / "results" / f"pilot-3machine-{stamp}.json"
+    path = ROOT / "experiments" / "llamacpp-feasibility" / "results" / f"pilot-3machine-{stamp}.json"
     path.write_text(json.dumps({"benchmark": "pilot-3machine", "utc": stamp, "network": a.network, "deployment": dep,
                                 "summary": summary, "runs": [{k: v for k, v in r.items() if k != "answer"}
                                                               for r in runs]}, indent=2))

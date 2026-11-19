@@ -6,12 +6,13 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "services" / "coordinator"))
+sys.path.insert(0, str(ROOT / "coordinator"))
 
-from difa.api.app import create_app  # noqa: E402
-from difa.config import Settings  # noqa: E402
+from idlemesh_coord.api.app import create_app  # noqa: E402
+from idlemesh_coord.config import Settings  # noqa: E402
 
-with tempfile.TemporaryDirectory() as tmp:
+# Windows cannot delete the SQLite file while the app still holds it open; skip that cleanup error.
+with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     app = create_app(Settings(db_path=os.path.join(tmp, "contract.sqlite3")))
     spec = app.openapi()
 

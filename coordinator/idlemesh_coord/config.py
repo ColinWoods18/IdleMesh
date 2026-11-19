@@ -1,0 +1,54 @@
+"""Proposed defaults from spec v0.3. Every value here is a baseline to be revised in the decision log."""
+import os
+from dataclasses import dataclass, field
+
+
+def _env_float(name: str, default: float) -> float:
+    return float(os.environ.get(name, default))
+
+
+# Seconds an idle control connection stays open. Must exceed the agents' heartbeat interval (5 s) so
+# heartbeats reuse one TLS connection instead of handshaking each time.
+CONTROL_KEEP_ALIVE_S = 30
+
+
+@dataclass
+class Settings:
+    db_path: str = field(default_factory=lambda: os.environ.get("IDLEMESH_DB", "idlemesh.sqlite3"))
+    # Coordinator tunnel key and certificate; defaults to the database's directory.
+    tunnel_dir: str | None = field(default_factory=lambda: os.environ.get("IDLEMESH_TUNNEL_DIR"))
+    # Certificate the control API is served with over HTTPS (set by scripts/dev_server.py). Its fingerprint
+    # is returned with every enrollment code so agents can pin it before sending the code.
+    control_cert: str | None = field(default_factory=lambda: os.environ.get("IDLEMESH_CONTROL_CERT"))
+    # Sessions (spec 6.5)
+    session_idle_s: int = 30 * 60
+    session_absolute_s: int = 12 * 3600
+    min_passphrase_len: int = 15
+    login_attempts_per_window: int = 10
+    login_window_s: int = 15 * 60
+    # Invitations and credentials (FR 02, FR 23)
+    invite_ttl_hours_default: int = 24
+    invite_ttl_hours_max: int = 168
+    credential_days_default: int = 30
+    credential_days_max: int = 90
+    # Queue and deadlines (FR 24, Section 7)
+    per_member_queue: int = 2
+    group_queue: int = 10
+    active_generations: int = 1
+    wait_deadline_s: float = field(default_factory=lambda: _env_float("IDLEMESH_WAIT_DEADLINE_S", 600))
+    active_deadline_s: float = field(default_factory=lambda: _env_float("IDLEMESH_ACTIVE_DEADLINE_S", 300))
+    # Request limits (spec 9.2)
+    max_body_bytes: int = 1 << 20
+    max_context_tokens: int = 4096
+    max_output_tokens: int = 512
+    # Device liveness (spec 9.4)
+    heartbeat_interval_s: float = 5
+    heartbeat_unassign_s: float = 15
+    # Partition prefetch (FR 30): devices fetch their ranges from the model's origin URL, or from this
+    # coordinator ("coordinator"), which suits a LAN or a test.
+    model_source: str = field(default_factory=lambda: os.environ.get("IDLEMESH_MODEL_SOURCE", "origin"))
+    prefetch_timeout_s: float = field(default_factory=lambda: _env_float("IDLEMESH_PREFETCH_TIMEOUT_S", 6 * 3600))
+    # Prototype-only knobs
+    fake_token_delay_s: float = field(default_factory=lambda: _env_float("IDLEMESH_FAKE_TOKEN_DELAY", 0.02))
+    argon2_fast: bool = field(default_factory=lambda: os.environ.get("IDLEMESH_ARGON2_FAST") == "1")
+    cookie_secure: bool = field(default_factory=lambda: os.environ.get("IDLEMESH_COOKIE_SECURE", "0") == "1")

@@ -4,7 +4,7 @@ Defaults: loopback only, fake runtime. The database and the coordinator's tunnel
 ~/.local/share/difa/ so they stay out of synced folders.
 
   --llamacpp         use the llama.cpp adapter with the Phase 1 build and models in ~/.cache/difa-phase1
-                     (this Mac's own stage is "Mac Studio" unless DIFA_LLAMACPP_LOCAL_DEVICE says otherwise)
+                     (this Mac's own stage is "Mac Studio" unless IDLEMESH_LLAMACPP_LOCAL_DEVICE says otherwise)
   --host ADDRESS     listen on a LAN address so real devices can enroll.
   --insecure-http    serve plain HTTP instead of HTTPS (loopback only; tests and local tools)
 
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "services" / "coordinator"))
+sys.path.insert(0, str(ROOT / "coordinator"))
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--port", type=int, default=8765)
@@ -38,21 +38,21 @@ if args.insecure_http and not loopback:
 
 if args.llamacpp:
     phase1 = Path.home() / ".cache" / "difa-phase1"
-    os.environ.setdefault("DIFA_RUNTIME", "llamacpp")
-    os.environ.setdefault("DIFA_LLAMACPP_BIN", str(phase1 / "llama.cpp" / "build" / "bin"))
-    os.environ.setdefault("DIFA_MODEL_DIR", str(phase1 / "models"))
-    os.environ.setdefault("DIFA_LLAMACPP_LOCAL_DEVICE", "Mac Studio")
+    os.environ.setdefault("IDLEMESH_RUNTIME", "llamacpp")
+    os.environ.setdefault("IDLEMESH_LLAMACPP_BIN", str(phase1 / "llama.cpp" / "build" / "bin"))
+    os.environ.setdefault("IDLEMESH_MODEL_DIR", str(phase1 / "models"))
+    os.environ.setdefault("IDLEMESH_LLAMACPP_LOCAL_DEVICE", "Mac Studio")
 if args.model_source:
-    os.environ["DIFA_MODEL_SOURCE"] = args.model_source
-data = Path(os.environ.get("DIFA_DATA_DIR", Path.home() / ".local" / "share" / "difa"))
+    os.environ["IDLEMESH_MODEL_SOURCE"] = args.model_source
+data = Path(os.environ.get("IDLEMESH_DATA_DIR", Path.home() / ".local" / "share" / "difa"))
 data.mkdir(parents=True, exist_ok=True)
 tls = {}
 if not args.insecure_http:
-    from difa.transport import CoordinatorIdentity, grouped  # noqa: E402
+    from idlemesh_coord.transport import CoordinatorIdentity, grouped  # noqa: E402
 
     control = CoordinatorIdentity(str(data), "coordinator-control", "DIFA coordinator control")
-    os.environ["DIFA_CONTROL_CERT"] = str(control.cert_path)
-    os.environ.setdefault("DIFA_COOKIE_SECURE", "1")
+    os.environ["IDLEMESH_CONTROL_CERT"] = str(control.cert_path)
+    os.environ.setdefault("IDLEMESH_COOKIE_SECURE", "1")
     tls = {"ssl_certfile": str(control.cert_path), "ssl_keyfile": str(control.key_path)}
     print(f"control API: https://{args.host}:{args.port}  certificate {control.cert_path}", flush=True)
     print(f"coordinator fingerprint (SHA-256): {grouped(control.fingerprint)}", flush=True)
@@ -63,13 +63,13 @@ db = data / "dev.sqlite3"
 if args.fresh:
     for suffix in ("", "-wal", "-shm"):
         Path(str(db) + suffix).unlink(missing_ok=True)
-os.environ.setdefault("DIFA_DB", str(db))
+os.environ.setdefault("IDLEMESH_DB", str(db))
 
 import uvicorn  # noqa: E402
 
-from difa.config import CONTROL_KEEP_ALIVE_S  # noqa: E402
+from idlemesh_coord.config import CONTROL_KEEP_ALIVE_S  # noqa: E402
 
 # Keep idle connections open well past the 5-second heartbeat interval. With uvicorn's default (5 s) nearly
 # every heartbeat paid a new TCP connection and TLS handshake (Phase 1 Round 6).
-uvicorn.run("difa.api.app:app_from_env", factory=True, host=args.host, port=args.port, log_level="info",
+uvicorn.run("idlemesh_coord.api.app:app_from_env", factory=True, host=args.host, port=args.port, log_level="info",
             timeout_keep_alive=CONTROL_KEEP_ALIVE_S, **tls)

@@ -5,5 +5,5 @@ __pycache__/
 .venv*/
 *.sqlite3
 *.sqlite3-*
-difa-agent-state.json
-agents/device/target/
+idlemesh-agent-state.json
+agent/target/

@@ -1,4 +1,4 @@
-"""Three-device smoke test against a running coordinator, using real difa-agent processes.
+"""Three-device smoke test against a running coordinator, using real idlemesh-agent processes.
 
 The agents use simulation profiles for the reference group (Mac capped at 64 GB, HP, Ubuntu VM).
 It checks Test A cooperation, the Test C pilot placement, chat streaming, and the compatible API.
@@ -19,7 +19,7 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--url", default="http://127.0.0.1:8765")
-parser.add_argument("--agent", default=str(Path.home() / ".cache" / "difa-target" / "debug" / "difa-agent"))
+parser.add_argument("--agent", default=str(Path.home() / ".cache" / "idlemesh-target" / "debug" / "idlemesh-agent"))
 args = parser.parse_args()
 BASE = args.url.rstrip("/")
 PASS = "smoke test passphrase long enough"

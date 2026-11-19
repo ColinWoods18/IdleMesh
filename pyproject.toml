@@ -1,5 +1,5 @@
 [project]
-name = "difa-coordinator"
+name = "idlemesh-coordinator"
 version = "0.1.0"
 description = "Distributed Inference For All: Phase 0 coordinator prototype"
 requires-python = ">=3.10"
@@ -20,8 +20,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["services/coordinator"]
+where = ["coordinator"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["services/coordinator"]
+testpaths = ["coordinator/tests"]
+pythonpath = ["coordinator"]

@@ -80,8 +80,16 @@ mod tests {
         {
             let out = windows::run("icacls", &[path.as_os_str()]).unwrap().to_lowercase();
             let entries: Vec<&str> = out.lines().filter(|l| l.contains(":(")).collect();
+            // Compare the account name only: icacls may show a truncated (NetBIOS) machine or domain name
+            // where whoami shows the full one, as on GitHub's Windows runners.
             let who = windows::run("whoami", &[]).unwrap().trim().to_lowercase();
-            entries.len() == 1 && !entries[0].contains("(i)") && entries[0].contains(&who)
+            let user = who.rsplit('\\').next().unwrap_or(&who).to_string();
+            let ok = entries.len() == 1 && !entries[0].contains("(i)")
+                && entries[0].contains(&format!("\\{user}:("));
+            if !ok {
+                eprintln!("icacls for {} (whoami {who}):\n{out}", path.display());
+            }
+            ok
         }
     }
 

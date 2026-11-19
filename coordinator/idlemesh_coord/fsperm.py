@@ -48,5 +48,7 @@ def is_owner_only(path: Path) -> bool:
     entries = [line.lower() for line in out.splitlines() if ":(" in line]
     who = subprocess.run(["whoami"], capture_output=True, text=True, check=True,
                          creationflags=_NO_WINDOW).stdout.strip().lower()
-    return (len(entries) == 1 and "(i)" not in entries[0]
-            and (who in entries[0] or _current_sid().lower() in entries[0]))
+    # Compare the account name only: icacls may show a truncated (NetBIOS) machine or domain name where
+    # whoami shows the full one, as on GitHub's Windows runners.
+    user = who.rsplit("\\", 1)[-1]
+    return len(entries) == 1 and "(i)" not in entries[0] and f"\\{user}:(" in entries[0]

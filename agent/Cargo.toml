@@ -1,0 +1,28 @@
+[package]
+name = "idlemesh-agent"
+version = "0.1.0"
+edition = "2021"
+description = "IdleMesh node agent: enrollment, capability probes, owner-policy enforcement, heartbeats and structured logs"
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+ctrlc = { version = "3", features = ["termination"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sysinfo = "0.33"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+
+[profile.release]
+strip = true

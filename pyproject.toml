@@ -1,7 +1,7 @@
 [project]
-name = "difa-coordinator"
+name = "idlemesh-coordinator"
 version = "0.1.0"
-description = "Distributed Inference For All: Phase 0 coordinator prototype"
+description = "IdleMesh coordinator (evolved from the DIFA prototype)"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.110",
@@ -10,6 +10,7 @@ dependencies = [
   "argon2-cffi>=23.1",
   "httpx>=0.27",
   "cryptography>=42",
+  "pyyaml>=6",
 ]
 
 [project.optional-dependencies]
@@ -20,8 +21,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["services/coordinator"]
+where = ["coordinator"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["services/coordinator"]
+testpaths = ["coordinator/tests"]
+pythonpath = ["coordinator"]

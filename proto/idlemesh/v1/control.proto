@@ -1,0 +1,235 @@
+// DRAFT for review (S1.11). Not compiled or served yet.
+//
+// The node control channel. Today it runs as HTTPS/JSON with a pinned coordinator certificate (D-06);
+// these messages are the shape of those JSON payloads, so moving to gRPC + mTLS later (sprint 12) is
+// a transport change, not a data-model change. Field names match the current JSON where it exists.
+//
+// Conventions for every IdleMesh proto:
+// - All records carry org_id, site_id and schema_version where they leave the node (PROJECT_PLAN §6).
+// - IDs are opaque strings: node "dev_...", deployment "dep_...", request "req_...", trace 16 hex digits.
+// - Never add a field that carries prompt or response text (D-11).
+// - Fields are only added, never renumbered or reused; retired numbers are listed as `reserved`.
+syntax = "proto3";
+
+package idlemesh.v1;
+
+import "google/protobuf/timestamp.proto";
+import "idlemesh/v1/telemetry.proto";
+
+service Coordinator {
+  // One-time-code enrollment. Today: POST /api/v1/devices/enroll.
+  rpc Enroll(EnrollRequest) returns (EnrollReply);
+  // Today: POST /api/v1/devices/{node_id}/heartbeat every 5 s, which renews the lease.
+  // Target: one bidirectional stream per node, so the coordinator can push commands immediately.
+  rpc Heartbeat(stream NodeStatus) returns (stream Command);
+  // Batched telemetry with on-disk buffering in the agent (sprint 2).
+  rpc ReportTelemetry(TelemetryBatch) returns (Ack);
+  // Crash reports and diagnostic bundles (sprint 4).
+  rpc ReportCrash(CrashReport) returns (Ack);
+  rpc UploadDiagnostics(stream DiagnosticChunk) returns (Ack);
+}
+
+message EnrollRequest {
+  string code = 1;                 // one-time enrollment code; never logged
+  string name = 2;                 // shown to admins; may identify a person, so stays on the coordinator
+  string public_key = 3;           // device tunnel certificate (PEM)
+  Capabilities capabilities = 4;
+  OwnerPolicy policy = 5;
+}
+
+message EnrollReply {
+  string node_id = 1;
+  string device_token = 2;         // stored only as a verifier on the coordinator; owner-only file on the node
+  double heartbeat_interval_s = 3;
+  uint32 lease_s = 4;
+  string coordinator_cert_pem = 5; // pinned by the agent for the worker tunnel
+}
+
+message Capabilities {
+  string os = 1;                   // windows, macos, linux
+  string arch = 2;
+  string backend_digest = 3;       // llama.cpp build the node runs; must match the deployment's
+  repeated string formats = 4;     // "gguf"
+  uint64 allocatable_bytes = 5;
+  double mem_bandwidth_gbps = 6;
+  double rtt_ms = 7;
+  Power power = 8;
+  optional double battery_pct = 9;
+  optional DecodeProbe decode_probe = 10;
+  // Planned (sprint 3): GPUs, VRAM, unified memory, backends detected.
+  repeated Gpu gpus = 11;
+  bool unified_memory = 12;
+  repeated string backends = 13;   // cuda, metal, vulkan, cpu
+}
+
+enum Power {
+  POWER_UNKNOWN = 0;
+  POWER_AC = 1;
+  POWER_BATTERY = 2;
+}
+
+message Gpu {
+  string vendor = 1;
+  string model = 2;
+  uint64 vram_bytes = 3;
+}
+
+message DecodeProbe {
+  string model = 1;
+  double tokens_per_s = 2;
+  string backend = 3;
+  optional uint32 threads = 4;
+}
+
+message OwnerPolicy {
+  uint64 memory_cap_bytes = 1;
+  bool allow_battery = 2;
+  double battery_stop_pct = 3;
+  double battery_resume_pct = 4;
+  bool paused = 5;
+  uint32 warm_hold_minutes = 6;
+}
+
+message NodeStatus {
+  string trace_id = 1;             // also sent as X-Trace-Id today; logged on both sides
+  Capabilities capabilities = 2;
+  bool paused = 3;
+  optional WorkerStatus worker = 4;
+  optional PrefetchStatus prefetch = 5;
+  // D-12 (sprint 4.9): the governor's current level and why.
+  double contribution_level = 6;
+  LevelReason level_reason = 7;
+  NodeState state = 8;
+  string agent_version = 9;        // version inventory (sprint 10)
+  string llama_cpp_version = 10;
+  string config_version = 11;
+}
+
+enum NodeState {
+  NODE_STATE_UNKNOWN = 0;
+  NODE_STATE_IDLE = 1;
+  NODE_STATE_ACTIVE = 2;
+  NODE_STATE_SLEEPING = 3;
+  NODE_STATE_DRAINING = 4;
+  NODE_STATE_SERVING = 5;
+  NODE_STATE_YIELDING = 6;         // user returned; minimal level, finishing or handing off (D-12)
+}
+
+enum LevelReason {
+  LEVEL_REASON_UNKNOWN = 0;
+  LEVEL_REASON_IDLE_RAMP = 1;
+  LEVEL_REASON_TIME_WINDOW = 2;
+  LEVEL_REASON_POLICY = 3;
+  LEVEL_REASON_USER_ACTIVITY = 4;
+  LEVEL_REASON_LOCAL_LOAD = 5;
+  LEVEL_REASON_POWER = 6;
+}
+
+message WorkerStatus {
+  string state = 1;                // running, stopped
+  string endpoint = 2;
+  string transport = 3;            // mtls, plaintext
+  uint64 rss_bytes = 4;
+  uint64 peak_rss_bytes = 5;
+  uint32 cap_kills = 6;
+  optional string last_stop_reason = 7;
+}
+
+message PrefetchStatus {
+  string deployment_id = 1;
+  string state = 2;                // fetching, ready, failed
+  uint64 bytes_done = 3;
+  uint64 bytes_total = 4;
+  optional string error = 5;
+}
+
+// The heartbeat reply today is one Command of kind LEASE carrying policy, assignment and prefetch.
+message Command {
+  string trace_id = 1;
+  oneof kind {
+    Lease lease = 2;
+    Drain drain = 3;               // D-12: yield or hand off (sprint 8)
+    RunProbe probe = 4;            // network and bandwidth probes (sprint 5)
+    SetLogLevel log_level = 5;     // temporary debug window (sprint 4)
+    RequestDiagnostics diagnostics = 6;
+    ConfigUpdate config = 7;       // remote configuration (sprint 10)
+    Stop stop = 8;                 // revoked or remote kill switch
+  }
+}
+
+message Lease {
+  OwnerPolicy policy = 1;          // admin limits merged with the owner's
+  uint64 policy_rev = 2;
+  uint32 lease_s = 3;
+  optional Assignment assignment = 4;
+  optional PrefetchManifest prefetch = 5;
+  repeated string active_request_ids = 6;   // for log correlation only (D-11)
+}
+
+message Assignment {
+  string deployment_id = 1;
+  uint32 layer_start = 2;          // today: "layers": [start, end)
+  uint32 layer_end = 3;
+}
+
+message PrefetchManifest {
+  string deployment_id = 1;
+  string url = 2;
+  string license = 3;              // the owner must have accepted it (D-10)
+  repeated TensorRange tensors = 4;
+}
+
+message TensorRange {
+  string name = 1;
+  uint64 offset = 2;
+  uint64 nbytes = 3;
+  string sha256 = 4;
+}
+
+message Drain {
+  string deployment_id = 1;
+  enum Mode {
+    MODE_UNKNOWN = 0;
+    MODE_FINISH_SLOWLY = 1;
+    MODE_HAND_OFF = 2;
+    MODE_STOP_NOW = 3;
+  }
+  Mode mode = 2;
+  uint32 deadline_ms = 3;
+}
+
+message RunProbe {
+  string probe_id = 1;
+  repeated string targets = 2;     // node IDs or host:port
+  enum Kind {
+    KIND_UNKNOWN = 0;
+    KIND_RTT = 1;
+    KIND_BANDWIDTH = 2;
+  }
+  Kind kind = 3;
+}
+
+message SetLogLevel {
+  string level = 1;                // error, warn, info, debug, trace
+  uint32 duration_s = 2;           // reverts automatically
+}
+
+message RequestDiagnostics {
+  string bundle_id = 1;
+  string requested_by = 2;
+}
+
+message ConfigUpdate {
+  string config_version = 1;
+  bytes config_yaml = 2;           // validated against the same schema as config/example.site.yaml
+}
+
+message Stop {
+  string reason = 1;
+}
+
+message Ack {
+  bool ok = 1;
+  uint32 accepted = 2;
+  google.protobuf.Timestamp received_at = 3;
+}

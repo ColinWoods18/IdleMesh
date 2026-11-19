@@ -220,20 +220,25 @@ I4A_DistributedInference/       # repo; "idlemesh" is still a placeholder name
 ├── README.md                   ✅ rewritten for IdleMesh
 ├── PROJECT_PLAN.md             ✅
 ├── changes.md                  ✅ log of changes from the inherited DIFA repo
+├── Sprints.md                  ✅ numbered sprint plan
+├── .github/workflows/ci.yml    ✅ CI: Windows, macOS, Ubuntu (S1.5)
 ├── LICENSE                     # decide in Phase 4; keep deps permissive
 ├── docs/
 │   ├── architecture.md
 │   ├── telemetry-schema.md
 │   ├── privacy-consent.md
+│   ├── error-codes.md          ✅ generated from contracts/error-codes.json (S1.8)
+│   ├── licenses.md             ✅ generated dependency licence inventory (S1.10)
+│   ├── long-lead.md            ✅ contacts and first messages for long-lead items (S1.13)
 │   ├── research/
 │   │   ├── backend-options.md  ✅ llama.cpp RPC vs. custom pipeline engine
 │   │   ├── experiments.md
 │   │   └── related-work.md
 │   └── legacy-difa/            ✅ frozen DIFA handoff, decisions, spec summaries, runbooks
-├── proto/                      # gRPC contracts (source of truth)
-│   ├── agent.proto
-│   └── coordinator.proto
-├── contracts/http/openapi.json ✅ exported HTTP contract (inherited)
+├── proto/idlemesh/v1/          ✅ draft contracts, review only (S1.11): control.proto, telemetry.proto
+├── contracts/
+│   ├── http/openapi.json       ✅ exported HTTP contract (inherited)
+│   └── error-codes.json        ✅ error-code catalog shared by coordinator and agent (S1.8)
 ├── agent/                      ✅ Rust crate `idlemesh-agent`
 │   ├── src/
 │   │   ├── main.rs             ✅ CLI: enroll / run
@@ -243,6 +248,8 @@ I4A_DistributedInference/       # repo; "idlemesh" is still a placeholder name
 │   │   ├── worker.rs           ✅ rpc-server lifecycle + memory watchdog
 │   │   ├── tunnel.rs           ✅ mTLS worker tunnel
 │   │   ├── prefetch.rs         ✅ shard download into llama.cpp cache
+│   │   ├── logging.rs          ✅ JSON log file, rotation, redaction, correlation IDs (S1.6)
+│   │   ├── secure_fs.rs        ✅ owner-only secret files on every OS (S1.3)
 │   │   ├── idle/               # per-OS idle detection (new)
 │   │   ├── netprobe/           # peer RTT/bandwidth (new)
 │   │   └── consent/            # (new)
@@ -259,6 +266,8 @@ I4A_DistributedInference/       # repo; "idlemesh" is still a placeholder name
 │   │   ├── gguf.py, partition.py ✅ GGUF parsing, exact splits, shard manifests
 │   │   ├── transport.py        ✅ coordinator side of the mTLS tunnel
 │   │   ├── api/                ✅ gateway (OpenAI subset now; add Ollama endpoints)
+│   │   ├── obs.py              ✅ JSON logs, correlation IDs, redaction (S1.7, S1.9)
+│   │   ├── site_config.py      ✅ site configuration loader (S1.12)
 │   │   ├── registry/           # (new)
 │   │   ├── graph/              # latency/bandwidth graph + clustering (new)
 │   │   ├── predictor/          # availability forecasting (new)
@@ -270,10 +279,10 @@ I4A_DistributedInference/       # repo; "idlemesh" is still a placeholder name
 │   ├── llamacpp-feasibility/   ✅ inherited benchmarks, netem relay, 7 rounds of results
 │   ├── baselines/              # petals, exo, parallax, llama.cpp-rpc
 │   └── analysis/
-├── scripts/                    ✅ dev server, pilot operator helper, smoke test
+├── scripts/                    ✅ dev server, trace.py, gen_error_codes.py, licenses.py, pilot helper, smoke test
 ├── deploy/                     # config templates, docker-compose for coordinator
 └── config/
-    └── example.site.yaml
+    └── example.site.yaml       ✅ (S1.12)
 ```
 
 ---

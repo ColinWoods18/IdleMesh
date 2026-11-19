@@ -1,0 +1,156 @@
+// DRAFT for review (S1.11). Not compiled or served yet.
+//
+// Telemetry, crash and diagnostic records (D-11; PROJECT_PLAN §6 and §6a). Sent as JSON in these shapes
+// over HTTPS until the gRPC move (D-06). Everything here is operational data: no message may carry prompt
+// or response text, and node IDs are pseudonymized when data leaves the site (research tier exports).
+syntax = "proto3";
+
+package idlemesh.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// One upload from an agent: whatever its on-disk buffer holds, oldest first (sprint 2).
+message TelemetryBatch {
+  uint32 schema_version = 1;
+  string org_id = 2;
+  string site_id = 3;
+  string node_id = 4;
+  repeated IdleSample idle = 5;
+  repeated NodeHealthSample health = 6;
+  repeated LogEvent logs = 7;      // warn and above by default; more during a debug window
+  repeated ErrorEvent errors = 8;
+  uint64 dropped_since_last = 9;   // records the buffer had to drop (bounded size, oldest first)
+}
+
+// Every 30-60 s while the agent runs (sprint 2; D-12 fields from sprint 4.9).
+message IdleSample {
+  google.protobuf.Timestamp ts = 1;
+  uint32 seconds_since_input = 2;
+  bool session_active = 3;
+  float cpu_util = 4;
+  float gpu_util = 5;
+  float mem_free_gb = 6;
+  bool on_battery = 7;
+  string state = 8;                // idle, active, sleeping, draining, serving, yielding
+  float contribution_level = 9;    // 0.0-1.0
+  string level_reason = 10;
+}
+
+message NodeHealthSample {
+  google.protobuf.Timestamp ts = 1;
+  float cpu_util = 2;
+  float gpu_util = 3;
+  float mem_used_gb = 4;
+  float gpu_mem_used_gb = 5;
+  optional float temp_c = 6;
+  float cache_disk_free_gb = 7;
+  uint64 agent_uptime_s = 8;
+  uint32 worker_restarts = 9;      // counters never reset silently: they reset only with agent_uptime_s
+  uint32 cap_kills = 10;
+  uint32 tunnel_errors = 11;
+  uint64 telemetry_buffer_bytes = 12;
+  uint64 telemetry_dropped = 13;
+}
+
+// The same shape as one line of the JSON logs written today by the coordinator and the agent.
+message LogEvent {
+  google.protobuf.Timestamp ts = 1;
+  string level = 2;
+  string component = 3;            // coordinator, agent, worker, stage
+  string logger = 4;
+  string message = 5;              // already redacted at the source
+  string version = 6;
+  optional string node_id = 7;
+  optional string deployment_id = 8;
+  optional string request_id = 9;
+  repeated string request_ids = 10; // agent lines: requests running on the node's deployment
+  optional string trace_id = 11;
+  optional string error_code = 12;  // from contracts/error-codes.json
+  map<string, string> fields = 13;
+}
+
+// A counted occurrence of a catalogued error, for rates and alerts without shipping every log line.
+message ErrorEvent {
+  google.protobuf.Timestamp ts = 1;
+  string error_code = 2;
+  string component = 3;
+  optional string request_id = 4;
+  uint32 count = 5;
+  map<string, string> context = 6;
+}
+
+// Agent panic, or a worker that exited on its own (sprint 4).
+message CrashReport {
+  string crash_id = 1;
+  google.protobuf.Timestamp ts = 2;
+  string component = 3;            // agent, worker, stage, coordinator
+  string node_id = 4;
+  string version = 5;
+  string build_hash = 6;
+  string os = 7;
+  string backtrace = 8;
+  optional int32 exit_code = 9;
+  repeated string log_tail = 10;   // redacted
+  string config_hash = 11;
+}
+
+// Requested by an admin, with the node's consent (sprint 4).
+message DiagnosticChunk {
+  string bundle_id = 1;
+  uint32 index = 2;
+  bool last = 3;
+  bytes data = 4;                  // a zip of logs, versions, probes, health and redacted config
+}
+
+message DiagnosticBundle {
+  string bundle_id = 1;
+  string node_id = 2;
+  string requested_by = 3;
+  google.protobuf.Timestamp ts = 4;
+  repeated string contents = 5;
+  uint64 size_bytes = 6;
+  google.protobuf.Timestamp retention_until = 7;
+}
+
+// One per request, written by the coordinator (sprint 7). Never the prompt or the reply.
+message InferenceEvent {
+  string request_id = 1;
+  string model = 2;
+  string model_revision = 3;
+  string route = 4;                // replica, split, stage_engine
+  google.protobuf.Timestamp ts_start = 5;
+  google.protobuf.Timestamp ts_end = 6;
+  repeated string nodes = 7;
+  uint32 stages = 8;
+  uint32 queue_wait_ms = 9;
+  uint32 ttft_ms = 10;
+  uint32 tokens_in = 11;
+  uint32 tokens_out = 12;
+  float tps = 13;
+  repeated StageTiming stage_ms = 14;
+  float predicted_ms_per_token = 15;
+  float actual_ms_per_token = 16;
+  string outcome = 17;             // ok, recovered, failed, cancelled, expired
+  optional string error_code = 18;
+  optional uint32 recovery_ms = 19;
+  optional string departure_type = 20;  // none, graceful, yield, hard
+  map<string, string> versions = 21;    // coordinator, agent, llama_cpp
+}
+
+message StageTiming {
+  string node_id = 1;
+  float compute_ms = 2;
+  float network_ms = 3;
+}
+
+// Scheduled golden-prompt benchmarks (sprint 8).
+message CanaryResult {
+  google.protobuf.Timestamp ts = 1;
+  string model = 2;
+  string route = 3;
+  repeated string nodes = 4;
+  float tps = 5;
+  uint32 ttft_ms = 6;
+  bool greedy_match = 7;
+  bool regression = 8;
+}

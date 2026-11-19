@@ -67,7 +67,7 @@ sprints.
 | Item | Needed by | Owner | Status |
 |---|---|---|---|
 | Michael's approval of the restructure and D-01 to D-12 | S1 | Colin → Michael | **Done** (2026-11-19) |
-| Test fleet: 3–5 machines (≥1 Mac, ≥1 NVIDIA PC, ≥1 CPU-only) with owners' consent | S4 | Colin | Open |
+| Test fleet: 3–5 machines (≥1 Mac, ≥1 NVIDIA PC, ≥1 CPU-only) with owners' consent | S4 | Colin | **Started:** 8 laptops available; OS and GPU mix to record in [docs/long-lead.md](docs/long-lead.md) |
 | Campus IT: workstation opt-in policy, firewall rule for the tunnel port, and the antivirus/EDR product used | S4 (policy), S10 (antivirus) | Colin | Open |
 | University privacy office: student data (FERPA), retention, **and what operational telemetry may be collected** (D-11) | S4 (telemetry), S9 (chat) | Colin | Open |
 | Campus single sign-on: an OIDC or SAML app registration with IT | S9 | Colin | Open |
@@ -98,6 +98,24 @@ logging foundation is in place before any new feature code, and every long-lead 
 | S1.13 | Start every long-lead item in the table above | Each has a named contact and a first message sent |
 
 **Demo:** CI green on three OSes; one request traced end to end through JSON logs.
+
+**Status at sprint review** (details in [changes.md](changes.md), "Sprint 1"):
+
+| ID | Status |
+|---|---|
+| S1.1 | ✅ Approved by Michael (2026-11-19); recorded in every changes.md entry |
+| S1.2 | 🟡 Committed on branch `sprint-1` with history kept; **push and merge to `main` waiting on Colin** |
+| S1.3 | ✅ Owner-only ACL on Windows for coordinator keys **and** the agent's state file; tests check the ACL |
+| S1.4 | ✅ Agent-driven tests now run on Windows (74 → 102 tests passing, 0 failing) |
+| S1.5 | 🟡 Workflow written (`.github/workflows/ci.yml`); first run happens on push |
+| S1.6 | ✅ Agent JSON log file with rotation, codes and IDs. IDs come from a process-wide context rather than `tracing` spans: one agent serves one node, and the context also covers the tunnel and prefetch threads |
+| S1.7 | ✅ Coordinator JSON logs; a request is followed from coordinator to agent by `request_id` (`scripts/trace.py`, tested end to end). Worker output is tagged with the deployment and active requests; checked on hardware once a llama.cpp build is on the test laptops |
+| S1.8 | ✅ `contracts/error-codes.json` + generated `docs/error-codes.md`; tests on both sides |
+| S1.9 | ✅ Redaction on every line, enforced by tests in both components |
+| S1.10 | ✅ `docs/licenses.md` generated; all 219 dependencies permissive; CI checks it |
+| S1.11 | 🟡 Drafts in `proto/idlemesh/v1/` with review questions; **review with Michael** |
+| S1.12 | ✅ `config/example.site.yaml`, loaded and validated by the coordinator |
+| S1.13 | 🟡 Contacts and first messages drafted in [docs/long-lead.md](docs/long-lead.md); **Colin to send** |
 
 ## Sprint 2 · Windows idle monitor and telemetry pipeline
 
@@ -289,4 +307,4 @@ Fill this in at each review.
 
 | Sprint | Done | Carried over | Retro note |
 |---|---|---|---|
-| 1 | | | |
+| 1 | S1.1, S1.3, S1.4, S1.6–S1.10, S1.12 | S1.2 push and merge, S1.5 first green run, S1.11 review, S1.13 messages sent | Write the logging foundation first: it caught an uncatalogued error code (`COORDINATOR_RESTART`) and a flaky Windows test on day one. |

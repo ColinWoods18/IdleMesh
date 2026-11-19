@@ -1,6 +1,8 @@
 """Helpers for tests that run a real coordinator over HTTP with real agent, worker, and llama.cpp processes."""
+import os
 import socket
 import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -12,16 +14,23 @@ import uvicorn
 from idlemesh_coord.api.app import create_app
 from idlemesh_coord.config import CONTROL_KEEP_ALIVE_S, Settings
 
+# Executables carry ".exe" on Windows; without it the existence checks below fail and the tests skip.
+EXE = ".exe" if sys.platform == "win32" else ""
 WORK = Path.home() / ".cache" / "difa-phase1"
-BIN = WORK / "llama.cpp" / "build" / "bin"
+BIN = Path(os.environ.get("IDLEMESH_LLAMACPP_BIN") or WORK / "llama.cpp" / "build" / "bin")
+RPC_SERVER = BIN / f"ggml-rpc-server{EXE}"
+LLAMA_SERVER = BIN / f"llama-server{EXE}"
 MODELS = WORK / "models"
 MODEL_FILE = MODELS / "qwen2.5-0.5b-instruct-q8_0.gguf"
-AGENT = Path.home() / ".cache" / "idlemesh-target" / "debug" / "idlemesh-agent"
+# The agent build: IDLEMESH_AGENT_BIN if set, else the debug build under CARGO_TARGET_DIR
+# (default ~/.cache/idlemesh-target, which keeps build output out of the synced repo folder).
+_TARGET = Path(os.environ.get("CARGO_TARGET_DIR") or Path.home() / ".cache" / "idlemesh-target")
+AGENT = Path(os.environ.get("IDLEMESH_AGENT_BIN") or _TARGET / "debug" / f"idlemesh-agent{EXE}")
 DIGEST = "llama.cpp-v0.9.0"
 PASS = "live integration test passphrase"
 GB = 10**9
 
-HAVE_STACK = AGENT.exists() and (BIN / "ggml-rpc-server").exists() and MODEL_FILE.exists()
+HAVE_STACK = AGENT.exists() and RPC_SERVER.exists() and MODEL_FILE.exists()
 
 
 def free_port() -> int:
@@ -100,7 +109,7 @@ def enroll_agent(c: httpx.Client, base: str, tmp_path, name: str, profile: str, 
 
 
 def start_agent(state: Path, log: Path, *extra: str) -> subprocess.Popen:
-    return subprocess.Popen([str(AGENT), "run", "--state", str(state), "--worker-bin", str(BIN / "ggml-rpc-server"),
+    return subprocess.Popen([str(AGENT), "run", "--state", str(state), "--worker-bin", str(RPC_SERVER),
                              *extra], stdout=open(log, "w"), stderr=subprocess.STDOUT)
 
 

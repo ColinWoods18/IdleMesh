@@ -10,7 +10,7 @@ import ssl
 import subprocess
 
 import pytest
-from live import (AGENT, BIN, HAVE_STACK, MODELS, all_ready, coordinator, enroll_agent, free_port, mac_heartbeat,
+from live import (AGENT, BIN, RPC_SERVER, HAVE_STACK, MODELS, all_ready, coordinator, enroll_agent, free_port, mac_heartbeat,
                   owner_client, start_agent, stop_agents, until)
 
 from idlemesh_coord.runtime.fake import FakeRuntime
@@ -27,7 +27,7 @@ def test_agent_refuses_to_expose_the_plaintext_worker(tmp_path):
         saved = json.loads(state.read_text())
         assert saved["tunnel_cert_pem"].startswith("-----BEGIN CERTIFICATE-----")
         assert saved["coordinator_cert_pem"].startswith("-----BEGIN CERTIFICATE-----")
-        out = subprocess.run([str(AGENT), "run", "--state", str(state), "--worker-bin", str(BIN / "ggml-rpc-server"),
+        out = subprocess.run([str(AGENT), "run", "--state", str(state), "--worker-bin", str(RPC_SERVER),
                               "--worker-host", "0.0.0.0", "--beats", "1"], capture_output=True, text=True, timeout=30)
         assert out.returncode != 0 and "refusing to expose the unencrypted llama.cpp worker" in out.stderr
 

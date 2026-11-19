@@ -17,13 +17,12 @@ from idlemesh_coord.api.app import create_app
 from idlemesh_coord.config import Settings
 from idlemesh_coord.runtime.llamacpp import LlamaCppRuntime
 
-WORK = Path.home() / ".cache" / "difa-phase1"
-BIN = WORK / "llama.cpp" / "build" / "bin"
-MODELS = WORK / "models"
+from live import BIN, LLAMA_SERVER, MODELS, RPC_SERVER  # noqa: E402
+
 DIGEST = "llama.cpp-v0.9.0"
 
 pytestmark = pytest.mark.skipif(
-    not (BIN / "llama-server").exists() or not (MODELS / "qwen2.5-0.5b-instruct-q8_0.gguf").exists(),
+    not LLAMA_SERVER.exists() or not (MODELS / "qwen2.5-0.5b-instruct-q8_0.gguf").exists(),
     reason="pinned llama.cpp build or model not present")
 
 
@@ -37,7 +36,7 @@ def _wait(port: int) -> None:
 
 
 def start_workers(ports: dict[str, tuple[int, int]]) -> dict[str, subprocess.Popen]:
-    procs = {name: subprocess.Popen([str(BIN / "ggml-rpc-server"), "-H", "127.0.0.1", "-p", str(port), "-d", "CPU",
+    procs = {name: subprocess.Popen([str(RPC_SERVER), "-H", "127.0.0.1", "-p", str(port), "-d", "CPU",
                                      "-t", str(threads)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
              for name, (port, threads) in ports.items()}
     for port, _ in ports.values():

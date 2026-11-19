@@ -19,16 +19,14 @@ from idlemesh_coord.api.app import create_app
 from idlemesh_coord.config import CONTROL_KEEP_ALIVE_S, Settings
 from idlemesh_coord.runtime.llamacpp import LlamaCppRuntime
 
-WORK = Path.home() / ".cache" / "difa-phase1"
-BIN = WORK / "llama.cpp" / "build" / "bin"
-MODELS = WORK / "models"
-AGENT = Path.home() / ".cache" / "idlemesh-target" / "debug" / "idlemesh-agent"
+from live import AGENT, BIN, MODELS, RPC_SERVER  # noqa: E402
+
 DIGEST = "llama.cpp-v0.9.0"
 PASS = "worker cap test passphrase"
 GB = 10**9
 
 pytestmark = pytest.mark.skipif(
-    not AGENT.exists() or not (BIN / "ggml-rpc-server").exists()
+    not AGENT.exists() or not RPC_SERVER.exists()
     or not (MODELS / "qwen2.5-0.5b-instruct-q8_0.gguf").exists(),
     reason="agent binary, llama.cpp build, or model not present")
 
@@ -101,7 +99,7 @@ def test_lowering_the_cap_kills_the_worker_and_drains_the_deployment(coordinator
             assert out.returncode == 0, out.stderr
             logs[name] = tmp_path / f"{profile}.log"
             agents[name] = subprocess.Popen(
-                [str(AGENT), "run", "--state", str(state), "--worker-bin", str(BIN / "ggml-rpc-server"),
+                [str(AGENT), "run", "--state", str(state), "--worker-bin", str(RPC_SERVER),
                  "--worker-port", str(port), "--worker-threads", str(threads)],
                 stdout=open(logs[name], "w"), stderr=subprocess.STDOUT)
 

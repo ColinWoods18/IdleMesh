@@ -7,6 +7,7 @@ import threading
 
 import pytest
 
+from idlemesh_coord.fsperm import is_owner_only
 from idlemesh_coord.transport import (CoordinatorIdentity, TunnelError, TunnelManager, cert_fingerprint, is_certificate,
                             rpc_command, rtt_summary)
 
@@ -51,7 +52,7 @@ def test_identity_is_created_once_with_a_private_key(tmp_path):
     a = CoordinatorIdentity(str(tmp_path))
     b = CoordinatorIdentity(str(tmp_path))
     assert a.cert_pem == b.cert_pem and is_certificate(a.cert_pem)
-    assert (a.key_path.stat().st_mode & 0o777) == 0o600
+    assert is_owner_only(a.key_path)  # mode 0600 on POSIX, an owner-only ACL on Windows
     assert len(cert_fingerprint(a.cert_pem)) == 64
     assert not is_certificate("k") and not is_certificate("-----BEGIN CERTIFICATE-----\nnot base64\n")
 
@@ -97,7 +98,12 @@ def test_device_that_does_not_trust_us_is_refused(ids):
         with socket.create_connection((host, int(port)), timeout=5) as s:
             s.sendall(b"hello")
             s.settimeout(5)
-            assert s.recv(16) == b""  # forwarder closes: nothing reaches the worker
+            # The forwarder closes, so nothing reaches the worker. Windows may report that close as an
+            # abort or reset rather than a clean end of stream; either way no bytes come back.
+            try:
+                assert s.recv(16) == b""
+            except (ConnectionAbortedError, ConnectionResetError):
+                pass
     finally:
         tunnels.close_all()
         server.close()

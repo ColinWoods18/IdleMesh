@@ -11,7 +11,6 @@ import asyncio
 import datetime
 import hashlib
 import ipaddress
-import os
 import socket
 import ssl
 import statistics
@@ -24,6 +23,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+
+from .fsperm import write_private
 
 CERT_HEADER = "-----BEGIN CERTIFICATE-----"
 
@@ -76,10 +77,8 @@ class CoordinatorIdentity:
                 .not_valid_after(start + datetime.timedelta(days=825))
                 .add_extension(x509.SubjectAlternativeName(san), critical=False)
                 .sign(key, hashes.SHA256()))
-        fd = os.open(self.key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-                                      serialization.NoEncryption()))
+        write_private(self.key_path, key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                       serialization.NoEncryption()))
         self.cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
 
     def client_context(self, device_cert_pem: str) -> ssl.SSLContext:

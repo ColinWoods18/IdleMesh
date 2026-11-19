@@ -8,6 +8,7 @@ mod control;
 mod policy;
 mod prefetch;
 mod probe;
+mod secure_fs;
 mod tunnel;
 mod worker;
 
@@ -193,13 +194,7 @@ fn capabilities(p: &probe::Probe, cap: u64, rtt_ms: f64, digest: &str) -> serde_
 
 fn save_state(path: &Path, state: &State) -> std::io::Result<()> {
     let body = serde_json::to_vec_pretty(state)?;
-    std::fs::write(path, body)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
+    secure_fs::write_private(path, &body)
 }
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);

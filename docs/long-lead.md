@@ -8,7 +8,7 @@ when every row has both.
 | # | Item | Needed by | Contact (name, role) | First message sent | Status |
 |---|---|---|---|---|---|
 | 1 | Michael's approval of the restructure and D-01 to D-12 | S1 | Michael Todd | 2026-11-19 | **Done** |
-| 2 | Test fleet | S4 | Colin (8 laptops available) | — | Started: 8 laptops; OS and GPU mix to confirm |
+| 2 | Test fleet | S4 | Colin | — | Started: dev machines on Windows (PC), macOS (laptop) and Linux (server over SSH). 8 laptops for later sprints; OS and GPU mix to confirm |
 | 3 | Campus IT: workstation opt-in policy, firewall rule, antivirus/EDR product | S4, S10 | _IT service desk or endpoint team_ | | Open |
 | 4 | Privacy office: student data, retention, operational telemetry | S4, S9 | _Privacy or compliance officer_ | | Open |
 | 5 | Campus single sign-on app registration (OIDC or SAML) | S9 | _Identity and access team_ | | Open |

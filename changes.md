@@ -17,8 +17,7 @@ and why.
 
 ## 2026-11-19 — Sprint 1: foundations, logging and CI
 
-Status: **done on branch `sprint-1`, awaiting Michael's review.** Push and merge to `main` are waiting on
-Colin. Story-by-story status is in [Sprints.md](Sprints.md#sprint-1--foundations-logging-and-approval).
+Status: **merged to `main` (PR #1), awaiting Michael's review.** Story-by-story status is in [Sprints.md](Sprints.md#sprint-1--foundations-logging-and-approval).
 
 ### What changed
 
@@ -49,7 +48,10 @@ Colin. Story-by-story status is in [Sprints.md](Sprints.md#sprint-1--foundations
 | D-14 | **Site configuration is YAML**, validated strictly; adds PyYAML (MIT) as a coordinator dependency. | Admins edit it by hand; comments explain each setting; strict validation catches typos. | Proposed |
 
 ### Known gaps
-- CI has not run yet: the first run happens when the branch is pushed.
+- CI: the Windows job failed at first (owner-only ACL checks on GitHub's runners), so `main` was
+  merged with CI on Windows only. macOS and Ubuntu, which had passed, are back in the matrix on
+  branch `sprint-1-close`. Dev machines on all three OSes (Windows PC, macOS laptop, Linux server)
+  are available to reproduce failures; the 8 laptops are for later sprints.
 - Worker-output capture is covered by unit tests and the end-to-end trace test without a worker. It
   needs checking on a laptop with a llama.cpp build (sprint 4, test fleet).
 - The error-code catalog file is read from the repository; packaging it with the coordinator comes with

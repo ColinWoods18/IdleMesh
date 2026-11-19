@@ -216,7 +216,7 @@ A new node computer must only need to **run the installer, approve it, and wait*
 Target layout. ✅ = exists now (mostly inherited from DIFA, see [changes.md](changes.md)); everything else is still to be created.
 
 ```
-I4A_DistributedInference/       # repo; "idlemesh" is still a placeholder name
+IdleMesh/                       # github.com/ColinWoods18/IdleMesh (fork of TheCodeheadMT/I4A); "IdleMesh" is still a working name
 ├── README.md                   ✅ rewritten for IdleMesh
 ├── PROJECT_PLAN.md             ✅
 ├── changes.md                  ✅ log of changes from the inherited DIFA repo

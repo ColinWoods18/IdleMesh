@@ -1,8 +1,11 @@
 """Owner-only files for secrets (private keys, tokens).
 
 POSIX: the file is created with mode 0600, so it is never readable by others, even briefly.
-Windows: mode bits are ignored, so inherited ACL entries are removed and only the current account
-(by SID) gets access, using the built-in ``icacls`` tool. Nothing extra needs installing.
+Windows: mode bits are ignored. Inherited ACL entries are removed, the current account (by SID) gets
+full control, and the broad groups (Everyone, Authenticated Users, Users) are removed, using the built-in
+``icacls``; nothing extra needs installing. SYSTEM and Administrators may keep access where Windows sets
+it explicitly: they can read any file anyway, and Windows' OpenSSH accepts the same set for private keys.
+What this blocks is another ordinary user on the same machine.
 """
 import os
 import subprocess
@@ -23,7 +26,9 @@ def _current_sid() -> str:
 def restrict_to_owner(path: Path) -> None:
     """Make an existing file readable and writable by its owner only."""
     if _WINDOWS:
-        subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"*{_current_sid()}:F"],
+        # Everyone, Authenticated Users, Users: by SID, so it works on any Windows language.
+        subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"*{_current_sid()}:F",
+                        "/remove:g", "*S-1-1-0", "*S-1-5-11", "*S-1-5-32-545"],
                        capture_output=True, check=True, creationflags=_NO_WINDOW)
     else:
         os.chmod(path, 0o600)
@@ -51,4 +56,8 @@ def is_owner_only(path: Path) -> bool:
     # Compare the account name only: icacls may show a truncated (NetBIOS) machine or domain name where
     # whoami shows the full one, as on GitHub's Windows runners.
     user = who.rsplit("\\", 1)[-1]
-    return len(entries) == 1 and "(i)" not in entries[0] and f"\\{user}:(" in entries[0]
+    mine = f"\\{user}:("
+    # Allowed: the owner, plus SYSTEM and Administrators (see the module docstring). Nothing inherited.
+    allowed = (mine, "nt authority\\system:(", "builtin\\administrators:(")
+    return (bool(entries) and any(mine in e for e in entries)
+            and all("(i)" not in e and any(a in e for a in allowed) for e in entries))

@@ -10,7 +10,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES groups(id), owner_id TEXT NOT NULL REFERENCES members(id),
   name TEXT NOT NULL, public_key TEXT NOT NULL, token_verifier TEXT NOT NULL, capabilities TEXT NOT NULL,
   capabilities_rev INTEGER NOT NULL DEFAULT 1, policy TEXT NOT NULL, policy_rev INTEGER NOT NULL DEFAULT 1,
-  status TEXT NOT NULL, enrolled_at TEXT NOT NULL, last_seen TEXT);
+  status TEXT NOT NULL, enrolled_at TEXT NOT NULL, last_seen TEXT, consent TEXT);
 CREATE TABLE IF NOT EXISTS enrollment_codes (
   id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES groups(id), member_id TEXT NOT NULL REFERENCES members(id),
   verifier TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT);
@@ -58,6 +58,16 @@ CREATE TABLE IF NOT EXISTS requests (
   completion_tokens INTEGER, error_code TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS requests_idem ON requests(member_id, client_request_id)
   WHERE client_request_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS idle_samples (
+  node TEXT NOT NULL, ts TEXT NOT NULL, org_id TEXT, site_id TEXT, seconds_since_input INTEGER,
+  session_locked INTEGER, cpu_util REAL NOT NULL, mem_free_gb REAL NOT NULL, on_battery INTEGER NOT NULL,
+  battery_pct REAL, state TEXT NOT NULL, received_at TEXT NOT NULL, PRIMARY KEY (node, ts));
+CREATE TABLE IF NOT EXISTS node_events (
+  node TEXT NOT NULL, ts TEXT NOT NULL, kind TEXT NOT NULL, from_state TEXT, to_state TEXT NOT NULL,
+  org_id TEXT, site_id TEXT, received_at TEXT NOT NULL, PRIMARY KEY (node, ts, kind, to_state));
+CREATE TABLE IF NOT EXISTS telemetry_drops (node TEXT NOT NULL, at TEXT NOT NULL, count INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idle_samples_ts ON idle_samples(ts);
+CREATE INDEX IF NOT EXISTS node_events_ts ON node_events(ts);
 CREATE TABLE IF NOT EXISTS audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT, group_id TEXT, actor_id TEXT, operation TEXT NOT NULL,
   object_id TEXT, result TEXT NOT NULL, at TEXT NOT NULL);
@@ -87,6 +97,17 @@ class Store:
         with self.tx() as c:
             if c.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
                 c.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
+            self._migrate(c)
+
+    @staticmethod
+    def _migrate(c) -> None:
+        """Bring a database made by an older coordinator up to SCHEMA_VERSION. New tables come from SCHEMA."""
+        version = c.execute("SELECT version FROM schema_version").fetchone()[0]
+        if version < 2:  # S2.6: the owner's consent record on each device
+            if "consent" not in {r[1] for r in c.execute("PRAGMA table_info(devices)")}:
+                c.execute("ALTER TABLE devices ADD COLUMN consent TEXT")
+        if version < SCHEMA_VERSION:
+            c.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 
     @contextmanager
     def tx(self):

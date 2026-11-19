@@ -5,11 +5,14 @@
 //! tunnel.rs).
 
 mod control;
+mod idle;
 mod logging;
+mod node_state;
 mod policy;
 mod prefetch;
 mod probe;
 mod secure_fs;
+mod telemetry;
 mod tunnel;
 mod worker;
 
@@ -18,8 +21,8 @@ use policy::{allocatable, effective_paused, merge, Lease, OwnerPolicy};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
-use tracing::{error, info, warn};
+use std::time::{Duration, Instant, SystemTime};
+use tracing::{debug, error, info, warn};
 use worker::{Worker, WorkerConfig};
 
 const DEFAULT_BACKEND_DIGEST: &str = "fake-runtime-0.1";
@@ -72,6 +75,31 @@ enum Cmd {
         /// Inference backend build this device runs (must match the coordinator's deployment).
         #[arg(long, default_value = DEFAULT_BACKEND_DIGEST)]
         backend_digest: String,
+        /// The owner consents to idle-data collection: input idle time, lock state, CPU use and node state.
+        #[arg(long)]
+        consent_idle_data: bool,
+        /// The owner consents to diagnostics: logs and crash reports the coordinator can request (S4).
+        #[arg(long)]
+        consent_diagnostics: bool,
+    },
+    /// Show or change this device's consent record. Restart `run` for a change to take effect.
+    Consent {
+        #[arg(long, default_value = "idlemesh-agent-state.json")]
+        state: PathBuf,
+        /// Idle-data collection: true or false.
+        #[arg(long)]
+        idle_data: Option<bool>,
+        /// Diagnostics: true or false.
+        #[arg(long)]
+        diagnostics: Option<bool>,
+    },
+    /// Print this machine's idle readings (seconds since input, lock state, CPU use, node state).
+    Idle {
+        /// Keep printing one line a second until stopped.
+        #[arg(long)]
+        watch: bool,
+        #[arg(long, default_value_t = DEFAULT_IDLE_AFTER_S)]
+        idle_after_s: u64,
     },
     /// Send heartbeats and enforce owner policy.
     Run {
@@ -113,6 +141,15 @@ enum Cmd {
         /// Model licenses the owner accepts for download on this device (repeatable, e.g. apache-2.0).
         #[arg(long = "accept-license")]
         accept_licenses: Vec<String>,
+        /// Seconds between idle samples (default: the coordinator's site setting).
+        #[arg(long)]
+        telemetry_interval_s: Option<u64>,
+        /// Seconds without input before the machine counts as idle (default: the coordinator's site setting).
+        #[arg(long)]
+        idle_after_s: Option<u64>,
+        /// Most disk space buffered telemetry may use while the coordinator is unreachable, in MB.
+        #[arg(long, default_value_t = 20)]
+        telemetry_buffer_mb: u64,
     },
     /// Run only the mTLS tunnel in front of an already running worker (benchmarks and on-device checks).
     Tunnel {
@@ -157,6 +194,31 @@ struct State {
     /// Full SHA-256 of the coordinator's control (HTTPS) certificate, pinned at enrollment.
     #[serde(default)]
     coordinator_fingerprint: Option<String>,
+    /// The owner's consent record (S2.6). Absent on devices enrolled before consent existed: nothing collected.
+    #[serde(default)]
+    consent: Consent,
+}
+
+/// What the owner agreed to (S2.6, D-11). Kept on the device and reported with every heartbeat; the agent
+/// collects nothing it lacks consent for, and the coordinator refuses telemetry without it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+struct Consent {
+    idle_data: bool,
+    diagnostics: bool,
+    policy_version: String,
+    /// When the owner last changed it (UTC).
+    recorded_at: Option<String>,
+}
+
+const CONSENT_POLICY_VERSION: &str = "v0";
+const DEFAULT_IDLE_AFTER_S: u64 = 600;
+const DEFAULT_TELEMETRY_INTERVAL_S: u64 = 60;
+
+impl Consent {
+    fn new(idle_data: bool, diagnostics: bool) -> Self {
+        Consent { idle_data, diagnostics, policy_version: CONSENT_POLICY_VERSION.into(),
+                  recorded_at: Some(logging::rfc3339(SystemTime::now())) }
+    }
 }
 
 fn default_digest() -> String {
@@ -173,6 +235,15 @@ struct HeartbeatReply {
     /// Requests the coordinator is running on this node's deployment, for log correlation.
     #[serde(default)]
     active_request_ids: Vec<String>,
+    /// Site telemetry settings (S2.3).
+    #[serde(default)]
+    telemetry: Option<TelemetrySettings>,
+}
+
+#[derive(Deserialize)]
+struct TelemetrySettings {
+    interval_s: u64,
+    idle_after_s: u64,
 }
 
 fn take_probe(simulate: &Option<String>) -> Result<probe::Probe, String> {
@@ -198,6 +269,9 @@ struct RunOptions {
     insecure_plaintext: bool,
     cache_dir: PathBuf,
     licenses: Vec<String>,
+    telemetry_interval_s: Option<u64>,
+    idle_after_s: Option<u64>,
+    telemetry_buffer_bytes: u64,
 }
 
 fn capabilities(p: &probe::Probe, cap: u64, rtt_ms: f64, digest: &str) -> serde_json::Value {
@@ -218,7 +292,7 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[allow(clippy::too_many_arguments)]
 fn enroll(coordinator: String, fingerprint: Option<String>, code: String, name: String, memory_cap_gb: f64,
-          allow_battery: bool, state: PathBuf, simulate: Option<String>, backend_digest: String)
+          allow_battery: bool, state: PathBuf, simulate: Option<String>, backend_digest: String, consent: Consent)
           -> Result<(), String> {
     // Check the address and fingerprint before probing or generating keys, so mistakes fail fast.
     let (http, seen) = control::client(&coordinator, fingerprint.as_deref(), CONTROL_TIMEOUT, CONTROL_TIMEOUT)?;
@@ -235,7 +309,7 @@ fn enroll(coordinator: String, fingerprint: Option<String>, code: String, name: 
     let body = json!({
         "code": code, "name": name, "public_key": identity.cert_pem,
         "capabilities": capabilities(&p, owner_policy.memory_cap_bytes, p.simulated_rtt_ms, &backend_digest),
-        "policy": owner_policy,
+        "policy": owner_policy, "consent": consent,
     });
     let url = format!("{}/api/v1/devices/enroll", coordinator.trim_end_matches('/'));
     let resp = http.post(url).json(&body).send().map_err(|e| {
@@ -263,6 +337,7 @@ fn enroll(coordinator: String, fingerprint: Option<String>, code: String, name: 
         tunnel_key_pem: Some(identity.key_pem),
         coordinator_cert_pem: reply["coordinator_cert_pem"].as_str().map(str::to_string),
         coordinator_fingerprint: seen.lock().unwrap().clone(),
+        consent,
     };
     save_state(&state, &st).map_err(|e| format!("cannot save the state file: {e}"))?;
     logging::set_node(&st.device_id);
@@ -349,6 +424,23 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
     let _ = ctrlc::set_handler(move || flag.store(true, std::sync::atomic::Ordering::SeqCst));
     let mut paused = true;
     let mut next_beat = Instant::now();
+    // Idle monitoring and telemetry (S2.1 to S2.6).
+    let telemetry_dir = state_dir(&state_path).join("telemetry");
+    let mut buffer = if st.consent.idle_data {
+        Some(telemetry::Buffer::open(&telemetry_dir, opts.telemetry_buffer_bytes)
+            .map_err(|e| format!("cannot open the telemetry buffer {}: {e}", telemetry_dir.display()))?)
+    } else {
+        info!("idle data is not collected: the owner has not consented (idlemesh-agent consent --idle-data true)");
+        None
+    };
+    let telemetry_url = format!("{}/api/v1/devices/{}/telemetry", st.coordinator.trim_end_matches('/'), st.device_id);
+    let mut interval_s = opts.telemetry_interval_s.unwrap_or(DEFAULT_TELEMETRY_INTERVAL_S);
+    let mut idle_after_s = opts.idle_after_s.unwrap_or(DEFAULT_IDLE_AFTER_S);
+    let mut tracker = node_state::Tracker::default();
+    let mut cpu = idle::CpuSampler::new();
+    let mut next_check = Instant::now();
+    let mut next_sample = Instant::now();
+    let mut upload_due = false;
     loop {
         if stop.load(std::sync::atomic::Ordering::SeqCst) {
             if let Some(w) = worker.as_mut() {
@@ -364,6 +456,36 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
                 next_beat = Instant::now(); // report the capacity change immediately
             }
         }
+        if Instant::now() >= next_check {
+            next_check = Instant::now() + Duration::from_secs(1);
+            let reading = idle::read();
+            let now = SystemTime::now();
+            let current = node_state::classify(&node_state::Inputs {
+                seconds_since_input: reading.seconds_since_input, session_locked: reading.session_locked,
+                idle_after_s, assigned: assignment.is_some(), paused });
+            for ch in tracker.observe(now, current) {
+                let from = ch.from.map_or("none", |s| s.as_str());
+                info!(from, to = ch.to.as_str(), "node state: {from} -> {}", ch.to.as_str());
+                if let Some(b) = buffer.as_mut() {
+                    record(b, json!({"kind": "state", "ts": logging::rfc3339(ch.at), "from": ch.from, "to": ch.to}));
+                    upload_due = true;
+                }
+            }
+            if Instant::now() >= next_sample {
+                next_sample = Instant::now() + Duration::from_secs(interval_s);
+                if let Some(b) = buffer.as_mut() {
+                    let p = take_probe_cached(&st.simulate, bandwidth)?;
+                    record(b, json!({
+                        "kind": "idle", "ts": logging::rfc3339(now),
+                        "seconds_since_input": reading.seconds_since_input, "session_locked": reading.session_locked,
+                        "cpu_util": cpu.sample(), "mem_free_gb": (p.available_bytes as f64 / GB * 100.0).round() / 100.0,
+                        "on_battery": matches!(p.power, policy::Power::Battery(_)), "battery_pct": p.power.pct(),
+                        "state": current,
+                    }));
+                    upload_due = true;
+                }
+            }
+        }
         if Instant::now() >= next_beat {
             let p = take_probe_cached(&st.simulate, bandwidth)?;
             paused = effective_paused(&effective, p.power, &mut battery_hold);
@@ -372,7 +494,11 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
             if let Some(d) = &decode {
                 caps["decode_probe"] = d.clone();
             }
-            let mut body = json!({"capabilities": caps, "paused": paused});
+            let mut body = json!({"capabilities": caps, "paused": paused, "consent": st.consent,
+                                  "node_state": tracker.state()});
+            if let Some(b) = buffer.as_ref() {
+                body["telemetry"] = json!({"buffer_bytes": b.bytes(), "dropped": b.dropped()});
+            }
             if let Some(w) = worker.as_mut() {
                 body["worker"] = w.status();
             }
@@ -391,6 +517,23 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
                     effective = merge(&st.owner_policy, &reply.policy);
                     paused = effective_paused(&effective, p.power, &mut battery_hold);
                     lease.renew(Instant::now(), Duration::from_secs(reply.lease_s));
+                    if let Some(t) = &reply.telemetry {
+                        let interval = opts.telemetry_interval_s.unwrap_or(t.interval_s).max(1);
+                        if interval != interval_s {
+                            next_sample = next_sample.min(Instant::now() + Duration::from_secs(interval));
+                            interval_s = interval;
+                        }
+                        idle_after_s = opts.idle_after_s.unwrap_or(t.idle_after_s);
+                    }
+                    if upload_due {
+                        if let Some(b) = buffer.as_mut() {
+                            let sent = b.flush(|batch| send_telemetry(&http, &telemetry_url, &st.device_token, batch));
+                            upload_due = !b.is_empty();
+                            if sent > 0 {
+                                debug!(records = sent, "telemetry uploaded: {sent} records");
+                            }
+                        }
+                    }
                     if let Some(m) = reply.prefetch.as_ref() {
                         prefetcher.offer(m);
                     }
@@ -438,13 +581,66 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
     }
 }
 
+fn state_dir(state: &Path) -> &Path {
+    state.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."))
+}
+
+fn record(b: &mut telemetry::Buffer, v: serde_json::Value) {
+    if let Err(e) = b.push(&v) {
+        error!(error_code = "TELEMETRY_BUFFER_IO", "cannot write to the telemetry buffer: {e}");
+    }
+}
+
+/// One telemetry batch to the coordinator. A batch it calls invalid is dropped; anything else is retried.
+fn send_telemetry(http: &reqwest::blocking::Client, url: &str, token: &str, batch: &serde_json::Value)
+                  -> Result<(), telemetry::SendError> {
+    let resp = http.post(url).bearer_auth(token).header("X-Trace-Id", logging::new_trace_id()).json(batch).send()
+        .map_err(|e| telemetry::SendError::Retry(e.to_string()))?;
+    let status = resp.status();
+    let detail = || format!("{status}: {}", resp.text().unwrap_or_default());
+    match status.as_u16() {
+        200..=299 => Ok(()),
+        400 | 413 | 422 => Err(telemetry::SendError::Invalid(detail())),
+        _ => Err(telemetry::SendError::Retry(detail())),
+    }
+}
+
+fn consent_cmd(state: PathBuf, idle_data: Option<bool>, diagnostics: Option<bool>) -> Result<(), String> {
+    let raw = std::fs::read(&state).map_err(|e| format!("cannot read {}: {e}", state.display()))?;
+    let mut st: State = serde_json::from_slice(&raw).map_err(|e| format!("{} is not valid: {e}", state.display()))?;
+    if idle_data.is_some() || diagnostics.is_some() {
+        st.consent = Consent::new(idle_data.unwrap_or(st.consent.idle_data),
+                                  diagnostics.unwrap_or(st.consent.diagnostics));
+        save_state(&state, &st).map_err(|e| format!("cannot save the state file: {e}"))?;
+        info!(idle_data = st.consent.idle_data, diagnostics = st.consent.diagnostics, "consent changed");
+    }
+    println!("{}", serde_json::to_string_pretty(&st.consent).unwrap());
+    Ok(())
+}
+
+fn idle_cmd(watch: bool, idle_after_s: u64) -> Result<(), String> {
+    let mut cpu = idle::CpuSampler::new();
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        let r = idle::read();
+        let state = node_state::classify(&node_state::Inputs {
+            seconds_since_input: r.seconds_since_input, session_locked: r.session_locked, idle_after_s,
+            assigned: false, paused: false });
+        println!("{}", json!({"seconds_since_input": r.seconds_since_input, "session_locked": r.session_locked,
+                               "cpu_util": cpu.sample(), "power": probe::real_with(0.0).power.label(),
+                               "state": state}));
+        if !watch {
+            return Ok(());
+        }
+    }
+}
+
 /// The JSON log goes next to the state file unless --log-dir says otherwise; `probe` and `tunnel` have no
 /// state file and log to the console only unless --log-dir is given.
 fn log_options(cli: &Cli) -> Result<logging::Options, String> {
-    let state_logs = |state: &Path| state.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."))
-        .join("logs");
+    let state_logs = |state: &Path| state_dir(state).join("logs");
     let dir = cli.log_dir.clone().or_else(|| match &cli.cmd {
-        Cmd::Enroll { state, .. } | Cmd::Run { state, .. } => Some(state_logs(state)),
+        Cmd::Enroll { state, .. } | Cmd::Run { state, .. } | Cmd::Consent { state, .. } => Some(state_logs(state)),
         _ => None,
     });
     Ok(logging::Options { level: logging::parse_level(&cli.log_level)?, dir, max_bytes: cli.log_max_mb * 1_000_000,
@@ -461,23 +657,25 @@ fn main() {
           "agent starting");
     let result = match cli.cmd {
         Cmd::Enroll { coordinator, coordinator_fingerprint, code, name, memory_cap_gb, allow_battery, state, simulate,
-                      backend_digest } => {
+                      backend_digest, consent_idle_data, consent_diagnostics } => {
             enroll(coordinator, coordinator_fingerprint, code, name, memory_cap_gb, allow_battery, state, simulate,
-                   backend_digest)
+                   backend_digest, Consent::new(consent_idle_data, consent_diagnostics))
         }
+        Cmd::Consent { state, idle_data, diagnostics } => consent_cmd(state, idle_data, diagnostics),
+        Cmd::Idle { watch, idle_after_s } => idle_cmd(watch, idle_after_s),
         Cmd::Run { state, beats, worker_bin, worker_host, worker_port, worker_threads, decode_probe_bench,
                    decode_probe_model, decode_probe_catalog, tunnel_listen, tunnel_advertise,
-                   insecure_plaintext_worker, cache_dir, accept_licenses } => {
-            let cache_dir = cache_dir.unwrap_or_else(|| {
-                state.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")).join("difa-cache")
-            });
+                   insecure_plaintext_worker, cache_dir, accept_licenses, telemetry_interval_s, idle_after_s,
+                   telemetry_buffer_mb } => {
+            let cache_dir = cache_dir.unwrap_or_else(|| state_dir(&state).join("difa-cache"));
             let worker = worker_bin.map(|bin| WorkerConfig {
                 bin, advertise: format!("{worker_host}:{worker_port}"), host: worker_host, port: worker_port,
                 threads: worker_threads, transport: "plaintext", cache_dir: None });
             let decode_probe = decode_probe_bench.zip(decode_probe_model).map(|(b, m)| (b, m, decode_probe_catalog));
             let tunnel = tunnel_listen.map(|l| (tunnel_advertise.unwrap_or_else(|| l.clone()), l)).map(|(a, l)| (l, a));
             run(state, RunOptions { beats, worker, decode_probe, tunnel, insecure_plaintext: insecure_plaintext_worker,
-                                    cache_dir, licenses: accept_licenses })
+                                    cache_dir, licenses: accept_licenses, telemetry_interval_s, idle_after_s,
+                                    telemetry_buffer_bytes: telemetry_buffer_mb * 1_000_000 })
         }
         Cmd::Tunnel { listen, worker_port, cert, key, peer_cert } => (|| {
             let read = |p: &PathBuf| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));

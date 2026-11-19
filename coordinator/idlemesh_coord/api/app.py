@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from .. import obs, partition
+from .. import obs, partition, telemetry
 from ..catalog import CATALOG, MODEL_FILES
 from ..config import Settings
 from ..domain.access import Branch, ForkError, Principal, Role, Scope, Visibility, can_create_with_visibility, \
@@ -32,7 +32,7 @@ from . import compat, errors
 from .auth import SESSION_COOKIE, bearer, current, require_admin, require_group, require_session
 from .errors import ApiError, not_found
 from .schemas import (CodeIn, ConversationIn, CreateGroupIn, CredentialIn, DeploymentIn, EnrollIn, ForkIn,
-                      HeartbeatIn, InviteIn, LoginIn, PolicyPatch, RecoverIn, RedeemIn, RequestIn)
+                      HeartbeatIn, InviteIn, LoginIn, PolicyPatch, RecoverIn, RedeemIn, RequestIn, TelemetryBatchIn)
 
 LOOPBACK = {"127.0.0.1", "::1", "localhost", "testclient"}
 
@@ -76,6 +76,8 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
                                      if settings.control_cert else None)
     app.state.path_rtt = {}  # device_id -> (mean ms through the worker tunnel, monotonic time measured)
     app.state.passwords = Passwords(settings.argon2_fast)
+    app.state.node_keys = telemetry.NodeKeys(os.path.dirname(os.path.abspath(settings.db_path)),
+                                             settings.pseudonymize_nodes)
     app.state.login_attempts = {}
     errors.install(app)
 
@@ -148,8 +150,15 @@ def _restore_deployments(app) -> None:
 async def _liveness_monitor(app) -> None:
     """Stop using a deployment as soon as a required device misses heartbeats (FR 04, spec 10)."""
     store, sched, settings = app.state.store, app.state.scheduler, app.state.settings
+    next_prune = 0.0
     while True:
         await asyncio.sleep(1)
+        if time.monotonic() >= next_prune:  # telemetry retention (S2.3), hourly
+            next_prune = time.monotonic() + 3600
+            try:
+                await run_in_threadpool(telemetry.prune, store, settings.telemetry_retention_days)
+            except Exception:  # noqa: BLE001 - retention must never stop the liveness monitor
+                log.exception("telemetry retention failed", extra={"error_code": "INTERNAL"})
         for gid in list(app.state.prefetch):
             try:
                 await _advance_prefetch(app, gid)
@@ -331,7 +340,7 @@ def _profiles(store: Store, group_id: str, settings: Settings, path_rtt: dict | 
             allow_battery=pol["allow_battery"], ready=reason is None, authorized=d["status"] == "active",
             paused=pol["paused"] or pol.get("reported_paused", False), stability=1.0,
             endpoint=worker["endpoint"] if worker and worker["state"] == "running" else None,
-            bandwidth_source=source, not_ready_reason=reason))
+            bandwidth_source=source, not_ready_reason=reason, node_state=cap.get("node_state") if fresh else None))
     return out
 
 
@@ -561,9 +570,10 @@ def register(app: FastAPI) -> None:
             if cur.rowcount != 1:
                 raise ApiError(404, "ENROLLMENT_INVALID", "This enrollment code is invalid, expired, or already used.")
             c.execute("INSERT INTO devices (id, group_id, owner_id, name, public_key, token_verifier, capabilities, policy,"
-                      " status, enrolled_at, last_seen) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                      " status, enrolled_at, last_seen, consent) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                       (did, row["group_id"], row["member_id"], body.name, body.public_key, verifier(token),
-                       body.capabilities.model_dump_json(), json.dumps(policy), "active", iso(now()), iso(now())))
+                       body.capabilities.model_dump_json(), json.dumps(policy), "active", iso(now()), iso(now()),
+                       body.consent.model_dump_json() if body.consent else None))
             store.audit(c, row["group_id"], row["member_id"], "device.enroll", did)
         with obs.bound(node_id=did):
             obs.log(log, logging.INFO, "node enrolled", os=body.capabilities.os, arch=body.capabilities.arch,
@@ -595,9 +605,17 @@ def register(app: FastAPI) -> None:
             caps["worker"] = body.worker.model_dump()
         if body.prefetch:
             caps["prefetch"] = body.prefetch.model_dump()
+        if body.node_state:
+            caps["node_state"] = body.node_state
+        if body.telemetry:
+            caps["telemetry"] = body.telemetry.model_dump()
+        consent = body.consent.model_dump_json() if body.consent else d["consent"]
+        if body.consent and consent != d["consent"]:
+            obs.log(log, logging.INFO, "consent changed", idle_data=body.consent.idle_data,
+                    diagnostics=body.consent.diagnostics, policy_version=body.consent.policy_version)
         with S(request).tx() as c:
-            c.execute("UPDATE devices SET capabilities = ?, policy = ?, last_seen = ? WHERE id = ?",
-                      (json.dumps(caps), json.dumps(policy), iso(now()), device_id))
+            c.execute("UPDATE devices SET capabilities = ?, policy = ?, last_seen = ?, consent = ? WHERE id = ?",
+                      (json.dumps(caps), json.dumps(policy), iso(now()), consent, device_id))
         g = request.app.state.scheduler.group(d["group_id"])
         stage = next((s for s in (g.placement or {}).get("stages", []) if s["device_id"] == device_id), None)
         public_policy = {k: v for k, v in policy.items() if k != "reported_paused"}
@@ -607,7 +625,31 @@ def register(app: FastAPI) -> None:
                 "assignment": {"deployment_id": g.deployment_id, "layers": stage["layers"]} if stage else None,
                 # Lets the agent tag its own and its worker's log lines with the requests it is serving (D-11).
                 "active_request_ids": sorted(g.running) if stage else [],
-                "prefetch": {"deployment_id": pending["deployment_id"], **manifest} if manifest else None}
+                "prefetch": {"deployment_id": pending["deployment_id"], **manifest} if manifest else None,
+                "telemetry": {"interval_s": settings.telemetry_interval_s, "idle_after_s": settings.idle_after_s}}
+
+    @app.post("/api/v1/devices/{device_id}/telemetry", tags=["devices"])
+    async def upload_telemetry(device_id: str, body: TelemetryBatchIn, request: Request):
+        """Idle samples and state changes from an agent's on-disk buffer (S2.3, S2.4). Repeats are ignored."""
+        d = _device_by_token(request, device_id)
+        if not telemetry.has_consent(json.loads(d["consent"]) if d["consent"] else None):
+            raise ApiError(403, "TELEMETRY_NO_CONSENT",
+                           "The device owner has not consented to idle-data collection.")
+        node = request.app.state.node_keys.key(device_id)
+        return await run_in_threadpool(telemetry.ingest, S(request), node, body, settings.org_id, settings.site_id)
+
+    @app.get("/api/v1/groups/{group_id}/devices/{device_id}/idle", tags=["devices"])
+    async def idle_timeline(group_id: str, device_id: str, request: Request, hours: float = 24,
+                            p: Principal = Depends(current)):
+        """A device's idle samples and state changes, for its owner or a group administrator."""
+        require_group(p, group_id)
+        d = S(request).one("SELECT owner_id, name FROM devices WHERE id = ? AND group_id = ?", (device_id, group_id))
+        if not d or (d["owner_id"] != p.member_id and not p.is_admin):
+            raise not_found()
+        hours = min(max(hours, 0.1), 24 * 90)
+        node = request.app.state.node_keys.key(device_id)
+        out = telemetry.timeline(S(request), node, now() - timedelta(hours=hours))
+        return {"device_id": device_id, "name": d["name"], "hours": hours, **out}
 
     @app.get("/api/v1/devices/{device_id}/model-file", tags=["devices"])
     async def model_file(device_id: str, request: Request):
@@ -671,7 +713,7 @@ def register(app: FastAPI) -> None:
                      "incompatible" if prof.backend_digest != request.app.state.runtime.backend_digest else "ready")
             out.append({"device_id": prof.device_id, "name": prof.name, "os": prof.os, "arch": prof.arch,
                         "state": state, "budget_bytes": prof.budget_bytes, "power": prof.power,
-                        "worker_running": prof.endpoint is not None})
+                        "worker_running": prof.endpoint is not None, "node_state": prof.node_state})
         return {"devices": out}
 
     # --- Deployments ------------------------------------------------------------------------

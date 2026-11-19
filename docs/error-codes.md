@@ -57,6 +57,11 @@ one code can be followed across components and counted in metrics.
 | `PROBE_FAILED` | — | yes | Agent: a hardware or decode probe failed; the node reports without that measurement. |
 | `STATE_UNREADABLE` | — | no | Agent: the state file is missing or corrupt; enroll the node again. |
 | `STATE_WRITE_FAILED` | — | no | Agent: the state file could not be written or restricted to its owner. |
+| `TELEMETRY_BUFFER_FULL` | — | no | Agent: the telemetry buffer reached its size limit and dropped its oldest records; the count is reported. |
+| `TELEMETRY_BUFFER_IO` | — | yes | Agent: the on-disk telemetry buffer could not be read or written. |
+| `TELEMETRY_NO_CONSENT` | 403 | no | The device's owner has not consented to idle-data collection, so the coordinator refuses its telemetry. |
+| `TELEMETRY_REJECTED` | — | no | Agent: the coordinator refused a telemetry batch as invalid; the batch was dropped and counted as lost. |
+| `TELEMETRY_UPLOAD_FAILED` | — | yes | Agent: buffered telemetry could not be delivered; it stays on disk and is retried. |
 
 ## Workers and the tunnel
 

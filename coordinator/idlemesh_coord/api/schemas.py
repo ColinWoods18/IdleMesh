@@ -1,7 +1,7 @@
 """Request and response schemas. Unknown fields are rejected (spec 9.2)."""
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from ..domain.access import Visibility
 
@@ -103,12 +103,29 @@ class Policy(Strict):
     warm_hold_minutes: int = Field(default=30, ge=0, le=1440)
 
 
+NodeState = Literal["idle", "active", "sleeping", "draining", "serving"]
+
+
+class Consent(Strict):
+    """The owner's consent record, kept on the device and reported with every heartbeat (S2.6)."""
+    idle_data: bool = False
+    diagnostics: bool = False
+    policy_version: str = Field(default="v0", max_length=20)
+    recorded_at: str | None = Field(default=None, max_length=40)
+
+
+class TelemetryStatus(Strict):
+    buffer_bytes: int = Field(ge=0)
+    dropped: int = Field(ge=0)
+
+
 class EnrollIn(Strict):
     code: str = Field(min_length=1, max_length=200)
     name: str = Field(min_length=1, max_length=100)
     public_key: str = Field(min_length=1, max_length=4000)  # PEM certificate for the worker tunnel
     capabilities: Capabilities
     policy: Policy
+    consent: Consent | None = None
 
 
 class HeartbeatIn(Strict):
@@ -116,6 +133,39 @@ class HeartbeatIn(Strict):
     paused: bool = False  # effective local state after the agent applies owner policy
     worker: WorkerStatus | None = None  # present when the agent supervises an inference worker
     prefetch: PrefetchStatus | None = None  # progress on this device's partition download (FR 30)
+    consent: Consent | None = None  # absent from agents older than S2.6: the stored record stays
+    node_state: NodeState | None = None
+    telemetry: TelemetryStatus | None = None
+
+
+class IdleRecord(Strict):
+    """One idle sample (PROJECT_PLAN §6 IdleSample). Never anything typed or shown on the machine."""
+    kind: Literal["idle"]
+    ts: AwareDatetime
+    seconds_since_input: int | None = Field(ge=0)
+    session_locked: bool | None
+    cpu_util: float = Field(ge=0, le=1)
+    mem_free_gb: float = Field(ge=0)
+    on_battery: bool
+    battery_pct: float | None = Field(default=None, ge=0, le=100)
+    state: NodeState
+
+
+class StateRecord(Strict):
+    """A node-state change. After a sleep the agent sends one at the start of the gap and one on waking."""
+    kind: Literal["state"]
+    ts: AwareDatetime
+    from_state: NodeState | None = Field(alias="from")
+    to: NodeState
+
+
+TelemetryRecord = Annotated[IdleRecord | StateRecord, Field(discriminator="kind")]
+
+
+class TelemetryBatchIn(Strict):
+    schema_version: Literal[1]
+    records: list[TelemetryRecord] = Field(max_length=5000)
+    dropped_since_last: int = Field(default=0, ge=0)
 
 
 class PolicyPatch(Strict):

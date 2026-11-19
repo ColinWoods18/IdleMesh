@@ -31,6 +31,7 @@ class DeviceProfile:
     link_mbps: float | None = None   # measured path bandwidth to the coordinator, if known
     bandwidth_source: str = "reported"   # "decode_probe" when derived from timed decoding (FR 06)
     not_ready_reason: str | None = None
+    node_state: str | None = None    # idle, active, sleeping, draining or serving, as the agent last reported (S2.5)
     rtt_source: str = "heartbeat"        # "tunnel" when timed through the worker tunnel by the coordinator
 
 

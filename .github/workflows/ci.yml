@@ -52,6 +52,9 @@ jobs:
       - name: Install the coordinator
         run: python -m pip install -e ".[dev]"
 
+      - name: Coordinator - smoke tests (fail fast, before the agent build)
+        run: python -m pytest -m smoke -q -rs
+
       - name: Agent - build
         working-directory: agent
         run: cargo build --locked

@@ -104,6 +104,42 @@
         "title": "CodeIn",
         "type": "object"
       },
+      "Consent": {
+        "additionalProperties": false,
+        "description": "The owner's consent record, kept on the device and reported with every heartbeat (S2.6).",
+        "properties": {
+          "diagnostics": {
+            "default": false,
+            "title": "Diagnostics",
+            "type": "boolean"
+          },
+          "idle_data": {
+            "default": false,
+            "title": "Idle Data",
+            "type": "boolean"
+          },
+          "policy_version": {
+            "default": "v0",
+            "maxLength": 20,
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "recorded_at": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded At"
+          }
+        },
+        "title": "Consent",
+        "type": "object"
+      },
       "ConversationIn": {
         "additionalProperties": false,
         "properties": {
@@ -279,6 +315,16 @@
             "title": "Code",
             "type": "string"
           },
+          "consent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Consent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "name": {
             "maxLength": 100,
             "minLength": 1,
@@ -367,6 +413,34 @@
           "capabilities": {
             "$ref": "#/components/schemas/Capabilities"
           },
+          "consent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Consent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "node_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "idle",
+                  "active",
+                  "sleeping",
+                  "draining",
+                  "serving"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node State"
+          },
           "paused": {
             "default": false,
             "title": "Paused",
@@ -376,6 +450,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/PrefetchStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "telemetry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TelemetryStatus"
               },
               {
                 "type": "null"
@@ -397,6 +481,96 @@
           "capabilities"
         ],
         "title": "HeartbeatIn",
+        "type": "object"
+      },
+      "IdleRecord": {
+        "additionalProperties": false,
+        "description": "One idle sample (PROJECT_PLAN \u00a76 IdleSample). Never anything typed or shown on the machine.",
+        "properties": {
+          "battery_pct": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Battery Pct"
+          },
+          "cpu_util": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Cpu Util",
+            "type": "number"
+          },
+          "kind": {
+            "const": "idle",
+            "title": "Kind",
+            "type": "string"
+          },
+          "mem_free_gb": {
+            "minimum": 0.0,
+            "title": "Mem Free Gb",
+            "type": "number"
+          },
+          "on_battery": {
+            "title": "On Battery",
+            "type": "boolean"
+          },
+          "seconds_since_input": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seconds Since Input"
+          },
+          "session_locked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Locked"
+          },
+          "state": {
+            "enum": [
+              "idle",
+              "active",
+              "sleeping",
+              "draining",
+              "serving"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "ts",
+          "seconds_since_input",
+          "session_locked",
+          "cpu_util",
+          "mem_free_gb",
+          "on_battery",
+          "state"
+        ],
+        "title": "IdleRecord",
         "type": "object"
       },
       "InviteIn": {
@@ -815,6 +989,124 @@
           "max_output_tokens"
         ],
         "title": "RequestIn",
+        "type": "object"
+      },
+      "StateRecord": {
+        "additionalProperties": false,
+        "description": "A node-state change. After a sleep the agent sends one at the start of the gap and one on waking.",
+        "properties": {
+          "from": {
+            "anyOf": [
+              {
+                "enum": [
+                  "idle",
+                  "active",
+                  "sleeping",
+                  "draining",
+                  "serving"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From"
+          },
+          "kind": {
+            "const": "state",
+            "title": "Kind",
+            "type": "string"
+          },
+          "to": {
+            "enum": [
+              "idle",
+              "active",
+              "sleeping",
+              "draining",
+              "serving"
+            ],
+            "title": "To",
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "ts",
+          "from",
+          "to"
+        ],
+        "title": "StateRecord",
+        "type": "object"
+      },
+      "TelemetryBatchIn": {
+        "additionalProperties": false,
+        "properties": {
+          "dropped_since_last": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Dropped Since Last",
+            "type": "integer"
+          },
+          "records": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "idle": "#/components/schemas/IdleRecord",
+                  "state": "#/components/schemas/StateRecord"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/IdleRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/StateRecord"
+                }
+              ]
+            },
+            "maxItems": 5000,
+            "title": "Records",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "records"
+        ],
+        "title": "TelemetryBatchIn",
+        "type": "object"
+      },
+      "TelemetryStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "buffer_bytes": {
+            "minimum": 0.0,
+            "title": "Buffer Bytes",
+            "type": "integer"
+          },
+          "dropped": {
+            "minimum": 0.0,
+            "title": "Dropped",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "buffer_bytes",
+          "dropped"
+        ],
+        "title": "TelemetryStatus",
         "type": "object"
       },
       "ValidationError": {
@@ -1522,6 +1814,57 @@
         ]
       }
     },
+    "/api/v1/devices/{device_id}/telemetry": {
+      "post": {
+        "description": "Idle samples and state changes from an agent's on-disk buffer (S2.3, S2.4). Repeats are ignored.",
+        "operationId": "upload_telemetry_api_v1_devices__device_id__telemetry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TelemetryBatchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Telemetry",
+        "tags": [
+          "devices"
+        ]
+      }
+    },
     "/api/v1/groups": {
       "post": {
         "description": "Local bootstrap only: the coordinator host creates the group (FR 01).",
@@ -1686,6 +2029,66 @@
           }
         },
         "summary": "List Devices",
+        "tags": [
+          "devices"
+        ]
+      }
+    },
+    "/api/v1/groups/{group_id}/devices/{device_id}/idle": {
+      "get": {
+        "description": "A device's idle samples and state changes, for its owner or a group administrator.",
+        "operationId": "idle_timeline_api_v1_groups__group_id__devices__device_id__idle_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "title": "Hours",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Idle Timeline",
         "tags": [
           "devices"
         ]

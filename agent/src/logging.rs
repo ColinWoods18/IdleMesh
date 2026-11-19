@@ -256,8 +256,12 @@ fn event_json(level: &Level, target: &str, mut f: Fields) -> Value {
 }
 
 fn now_rfc3339() -> String {
-    // UTC with milliseconds, without pulling in a date crate.
-    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    rfc3339(std::time::SystemTime::now())
+}
+
+/// UTC with milliseconds, without pulling in a date crate.
+pub fn rfc3339(t: std::time::SystemTime) -> String {
+    let d = t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let (secs, ms) = (d.as_secs() as i64, d.subsec_millis());
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     let (h, m, s) = (rem / 3600, rem % 3600 / 60, rem % 60);
@@ -425,7 +429,8 @@ mod tests {
             .map(|c| c["code"].as_str().unwrap()).collect();
         let used = Regex::new(r#"error_code\s*=\s*"([A-Z][A-Z0-9_]+)""#).unwrap();
         let sources = [include_str!("main.rs"), include_str!("worker.rs"), include_str!("tunnel.rs"),
-                       include_str!("prefetch.rs"), include_str!("probe.rs"), include_str!("control.rs")];
+                       include_str!("prefetch.rs"), include_str!("probe.rs"), include_str!("control.rs"),
+                       include_str!("idle.rs"), include_str!("telemetry.rs")];
         let mut count = 0;
         for src in sources {
             for c in used.captures_iter(src) {

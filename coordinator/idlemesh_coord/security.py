@@ -44,6 +44,8 @@ class Passwords:
 
     def verify(self, stored_hash: str | None, passphrase: str) -> bool:
         try:
-            return self._ph.verify(stored_hash or self._dummy, passphrase) and stored_hash is not None
+            # An empty hash takes the dummy path for timing but must never verify (it would accept the
+            # dummy passphrase, which is in the source).
+            return self._ph.verify(stored_hash or self._dummy, passphrase) and bool(stored_hash)
         except (VerifyMismatchError, VerificationError, InvalidHashError):
             return False

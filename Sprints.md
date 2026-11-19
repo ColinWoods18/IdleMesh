@@ -61,8 +61,8 @@ flowchart LR
 
 ## Long-lead items (start in sprint 1, track every sprint)
 
-These depend on other people and can take a long time. Start them early so they don't block later
-sprints.
+These depend on other people and can take a long time. **On the back burner for now** (Colin's call,
+after Sprint 1): engineering goes first, and each item is picked up before the sprint that needs it.
 
 | Item | Needed by | Owner | Status |
 |---|---|---|---|
@@ -113,15 +113,14 @@ logging foundation is in place before any new feature code, and every long-lead 
 | S1.8 | ✅ `contracts/error-codes.json` + generated `docs/error-codes.md`; tests on both sides |
 | S1.9 | ✅ Redaction on every line, enforced by tests in both components |
 | S1.10 | ✅ `docs/licenses.md` generated; all 219 dependencies permissive; CI checks it |
-| S1.11 | 🟡 Drafts in `proto/idlemesh/v1/` with review questions; **review with Michael** |
+| S1.11 | ✅ Drafts in `proto/idlemesh/v1/` accepted as the starting shape. A separate review was dropped: Colin has explicit permission to proceed. They change as the code needs |
 | S1.12 | ✅ `config/example.site.yaml`, loaded and validated by the coordinator |
-| S1.13 | 🟡 Approval done; test fleet started (see the long-lead table). Items 3–7: contacts and first messages drafted in [docs/long-lead.md](docs/long-lead.md); **Colin to name the contacts and send** |
+| S1.13 | ⏸ Deferred. Approval done and dev machines on all three OSes in hand. Items 3–7 are on the back burner while engineering moves ahead; drafts stay in [docs/long-lead.md](docs/long-lead.md) |
 
-**Demo status:** the end-to-end trace works (`scripts/trace.py`). CI is green on Windows only, so
-"green on three OSes" is not met yet.
+**Demo status:** the end-to-end trace works (`scripts/trace.py`); CI runs on Windows, macOS and
+Ubuntu and is required before merging to `main`.
 
-**Sprint 1 is not closed.** Remaining: S1.5 (macOS and Ubuntu in CI, merge protection), S1.11 (proto
-review with Michael), S1.13 (send the long-lead messages).
+**Sprint 1 is closed.** The long-lead items (S1.13) carry over as deferred, not blocking.
 
 ## Sprint 2 · Windows idle monitor and telemetry pipeline
 

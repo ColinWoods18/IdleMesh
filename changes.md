@@ -49,8 +49,10 @@ Status: **merged to `main` (PR #1), awaiting Michael's review.** Story-by-story 
 
 ### Known gaps
 - CI: the Windows job failed at first (owner-only ACL checks on GitHub's runners), so `main` was
-  merged with CI on Windows only. macOS and Ubuntu, which had passed, are back in the matrix on
-  branch `sprint-1-close`. Dev machines on all three OSes (Windows PC, macOS laptop, Linux server)
+  merged with CI on Windows only. macOS and Ubuntu, which had passed, are back in the matrix (PR #2),
+  and CI is required before merging to `main`.
+- S1.11: the proto drafts are accepted as the starting shape without a separate review (Colin has
+  explicit permission). S1.13: long-lead items 3–7 are deferred so engineering can move ahead. Dev machines on all three OSes (Windows PC, macOS laptop, Linux server)
   are available to reproduce failures; the 8 laptops are for later sprints.
 - Worker-output capture is covered by unit tests and the end-to-end trace test without a worker. It
   needs checking on a laptop with a llama.cpp build (sprint 4, test fleet).

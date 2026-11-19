@@ -7,7 +7,7 @@ shared with everyone else and run immediately when nobody is waiting.
 
 - **Plan:** [PROJECT_PLAN.md](PROJECT_PLAN.md): objectives, architecture, phases, experiments.
 - **What changed from the inherited code:** [changes.md](changes.md).
-- **Delivery plan:** [Sprints.md](Sprints.md). Sprint 1 (foundations, logging, CI): code work merged; cross-OS CI, the proto review and the long-lead messages are still open.
+- **Delivery plan:** [Sprints.md](Sprints.md). Sprint 1 (foundations, logging, CI) is complete.
 - **Backend decision (llama.cpp RPC vs. custom pipeline engine):** [docs/research/backend-options.md](docs/research/backend-options.md).
 - **Error codes:** [docs/error-codes.md](docs/error-codes.md). **Licences:** [docs/licenses.md](docs/licenses.md).
 - **History:** this repository evolved from the DIFA prototype by Michael Todd. Its frozen handoff

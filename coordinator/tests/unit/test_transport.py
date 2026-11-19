@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from idlemesh_coord.fsperm import is_owner_only
+from idlemesh_coord.fsperm import describe_acl, is_owner_only
 from idlemesh_coord.transport import (CoordinatorIdentity, TunnelError, TunnelManager, cert_fingerprint, is_certificate,
                             rpc_command, rtt_summary)
 
@@ -52,7 +52,7 @@ def test_identity_is_created_once_with_a_private_key(tmp_path):
     a = CoordinatorIdentity(str(tmp_path))
     b = CoordinatorIdentity(str(tmp_path))
     assert a.cert_pem == b.cert_pem and is_certificate(a.cert_pem)
-    assert is_owner_only(a.key_path)  # mode 0600 on POSIX, an owner-only ACL on Windows
+    assert is_owner_only(a.key_path), describe_acl(a.key_path)  # 0600 on POSIX, owner-only ACL on Windows
     assert len(cert_fingerprint(a.cert_pem)) == 64
     assert not is_certificate("k") and not is_certificate("-----BEGIN CERTIFICATE-----\nnot base64\n")
 

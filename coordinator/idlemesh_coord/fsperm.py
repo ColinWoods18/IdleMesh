@@ -58,6 +58,14 @@ def is_owner_only(path: Path) -> bool:
     user = who.rsplit("\\", 1)[-1]
     mine = f"\\{user}:("
     # Allowed: the owner, plus SYSTEM and Administrators (see the module docstring). Nothing inherited.
-    allowed = (mine, "nt authority\\system:(", "builtin\\administrators:(")
+    # OWNER RIGHTS (S-1-3-4) means "whoever owns the file", which is also the owner.
+    allowed = (mine, "nt authority\\system:(", "builtin\\administrators:(", "owner rights:(")
     return (bool(entries) and any(mine in e for e in entries)
             and all("(i)" not in e and any(a in e for a in allowed) for e in entries))
+
+
+def describe_acl(path: Path) -> str:
+    """The file's permissions as icacls prints them (Windows) or its mode (POSIX), for test messages."""
+    if not _WINDOWS:
+        return oct(path.stat().st_mode & 0o777)
+    return subprocess.run(["icacls", str(path)], capture_output=True, text=True, creationflags=_NO_WINDOW).stdout

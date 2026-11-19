@@ -91,7 +91,7 @@ mod tests {
             let user = who.rsplit('\\').next().unwrap_or(&who).to_string();
             // Allowed: the owner, plus SYSTEM and Administrators (see the module comment). Nothing inherited.
             let allowed = |e: &str| e.contains(&format!("\\{user}:(")) || e.contains("nt authority\\system:(")
-                || e.contains("builtin\\administrators:(");
+                || e.contains("builtin\\administrators:(") || e.contains("owner rights:(");
             let ok = !entries.is_empty() && entries.iter().all(|e| !e.contains("(i)") && allowed(e))
                 && entries.iter().any(|e| e.contains(&format!("\\{user}:(")));
             if !ok {

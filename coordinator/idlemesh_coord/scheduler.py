@@ -6,9 +6,11 @@ and delivered only to authorized subscribers by the API layer.
 """
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 
+from . import obs
 from .config import Settings
 from .domain.fairqueue import FairQueue
 from .domain.ledger import InsufficientCapacity, Ledger
@@ -19,6 +21,8 @@ from .store import Store
 from .tokens import context_tokens
 
 MAX_EVENTS = 4096
+
+log = logging.getLogger("idlemesh_coord.scheduler")
 
 
 class Channel:
@@ -156,7 +160,13 @@ class Scheduler:
 
     def _finish(self, g: GroupRuntime, request_id: str, state: RequestState, event: str, payload: dict, **fields):
         self._transition(request_id, state, **fields)
-        g.admitted_at.pop(request_id, None)
+        admitted = g.admitted_at.pop(request_id, None)
+        code = fields.get("error_code")
+        level = logging.INFO if state in (RequestState.COMPLETED, RequestState.CANCELLED) else logging.WARNING
+        with obs.bound(request_id=request_id, deployment_id=g.deployment_id):
+            obs.log(log, level, f"request {state.value}", error_code=code, outcome=state.value,
+                    since_admitted_ms=round((time.monotonic() - admitted) * 1000) if admitted else None,
+                    completion_tokens=fields.get("completion_tokens"), finish_reason=fields.get("finish_reason"))
         ch = self.channels.get(request_id)
         if ch:
             ch.emit(event, payload, terminal=True)
@@ -190,6 +200,9 @@ class Scheduler:
             task.add_done_callback(self._tasks.discard)
 
     async def _execute(self, g: GroupRuntime, rid: str, cancel: asyncio.Event) -> None:
+        # This task's context carries the IDs, so runtime and worker logs made on its behalf are tagged too.
+        obs.request_id.set(rid)
+        obs.deployment_id.set(g.deployment_id)
         ch = self.channels[rid]
         req = self.store.one("SELECT * FROM requests WHERE id = ?", (rid,))
         parts: list[str] = []
@@ -202,6 +215,8 @@ class Scheduler:
                 raise RuntimeFailure("CAPACITY", "Not enough reserved memory is available right now.")
             self._transition(rid, RequestState.RESERVED)
             self._transition(rid, RequestState.RUNNING)
+            obs.log(log, logging.INFO, "request started", attempt=req["attempt"],
+                    nodes=[st["device_id"] for st in g.placement.get("stages", [])])
             ch.emit("started", {"deployment_id": g.deployment_id, "attempt": req["attempt"],
                                 "partition_map": self.runtime.partition_map(g.deployment_id)})
             ids = json.loads(req["context_message_ids"])

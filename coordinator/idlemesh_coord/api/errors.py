@@ -26,11 +26,13 @@ def not_found() -> ApiError:
 
 def install(app) -> None:
     @app.exception_handler(ApiError)
-    async def _api(_: Request, e: ApiError):
+    async def _api(request: Request, e: ApiError):
+        request.state.error_code = e.code
         return JSONResponse(envelope(e.code, e.message, e.retryable, **(e.extra or {})), e.status, headers=e.headers)
 
     @app.exception_handler(RequestValidationError)
-    async def _validation(_: Request, e: RequestValidationError):
+    async def _validation(request: Request, e: RequestValidationError):
+        request.state.error_code = "INVALID_FIELDS"
         problems = []
         for err in e.errors():
             loc = ".".join(str(x) for x in err.get("loc", ()) if x != "body")
@@ -39,6 +41,7 @@ def install(app) -> None:
         return JSONResponse(envelope("INVALID_FIELDS", "; ".join(problems) or "Invalid request."), 400)
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http(_: Request, e: StarletteHTTPException):
+    async def _http(request: Request, e: StarletteHTTPException):
         code = {404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED"}.get(e.status_code, "HTTP_ERROR")
+        request.state.error_code = code
         return JSONResponse(envelope(code, str(e.detail)), e.status_code)

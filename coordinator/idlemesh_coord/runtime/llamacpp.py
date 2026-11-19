@@ -11,16 +11,18 @@ random API key, and must only be used with synthetic prompts (spec 6.2).
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
 import socket
 import subprocess
+import threading
 from pathlib import Path
 
 import httpx
 
-from .. import gguf
+from .. import gguf, obs
 from ..catalog import MODEL_FILES
 from .base import Cancelled, Generation, RuntimeFailure
 
@@ -49,6 +51,29 @@ def parse_model_buffers(log_text: str) -> dict[str, float]:
         key = f"rpc:{m.group(2)}" if m.group(2) else m.group(1)
         out[key] = round(out.get(key, 0) + float(m.group(3)), 2)
     return out
+
+
+# llama-server output that is safe and useful in the structured log: problems and load summaries.
+# Everything else (including verbose request detail, which can contain prompt text) stays only in the
+# local per-deployment file (D-11: prompt and response text never reach logs or telemetry).
+_FORWARD = re.compile(r"(?i)\b(error|failed|failure|warn|warning|abort|assert|crash|exception)\b|load_tensors:.*buffer size")
+_worker_log = logging.getLogger("idlemesh_coord.worker.llama_server")
+
+
+def capture_output(proc: subprocess.Popen, log_path: Path, deployment_id: str) -> threading.Thread:
+    """Copy a worker's output to its log file, and forward problem lines to the JSON log with IDs."""
+    def pump():
+        with obs.bound(deployment_id=deployment_id), open(log_path, "w", encoding="utf-8") as f:
+            for raw in iter(proc.stdout.readline, b""):
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                f.write(line + "\n")
+                f.flush()
+                if _FORWARD.search(line):
+                    level = logging.WARNING if re.search(r"(?i)error|fail|abort|assert|crash", line) else logging.INFO
+                    obs.log(_worker_log, level, line[:500], source="llama-server")
+    t = threading.Thread(target=pump, name=f"capture-{deployment_id}", daemon=True)
+    t.start()
+    return t
 
 
 class LlamaCppRuntime:
@@ -141,8 +166,8 @@ class LlamaCppRuntime:
         if rpc:  # must precede -dev: llama-server registers RPC devices when it parses --rpc
             args += ["--rpc", ",".join(rpc)]
         args += ["-dev", ",".join(devs), "-ts", ",".join(repr(s) for s in shares)]
-        log = open(log_path, "w")
-        proc = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        capture_output(proc, log_path, deployment_id)
         client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", headers={"Authorization": f"Bearer {key}"},
                                    timeout=httpx.Timeout(300, connect=5))
         try:

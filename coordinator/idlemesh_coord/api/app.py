@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import time
@@ -12,7 +13,7 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from .. import partition
+from .. import obs, partition
 from ..catalog import CATALOG, MODEL_FILES
 from ..config import Settings
 from ..domain.access import Branch, ForkError, Principal, Role, Scope, Visibility, can_create_with_visibility, \
@@ -34,6 +35,9 @@ from .schemas import (CodeIn, ConversationIn, CreateGroupIn, CredentialIn, Deplo
                       HeartbeatIn, InviteIn, LoginIn, PolicyPatch, RecoverIn, RedeemIn, RequestIn)
 
 LOOPBACK = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+log = logging.getLogger("idlemesh_coord.api")
+access_log = logging.getLogger("idlemesh_coord.access")
 
 
 def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
@@ -75,17 +79,33 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
     errors.install(app)
 
     @app.middleware("http")
-    async def body_limit(request: Request, call_next):
-        length = request.headers.get("content-length")
-        if length and int(length) > settings.max_body_bytes:
-            return JSONResponse(errors.envelope("BODY_TOO_LARGE", "Request body exceeds 1 MiB."), 413)
-        started = time.perf_counter()
-        response = await call_next(request)
-        if request.url.path.endswith("/heartbeat"):
-            # Agents subtract this from their measured round trip, so the RTT they report is the network's,
-            # not the coordinator's database write (spec 7.2 fallback input when no tunnel RTT is known).
-            response.headers["Server-Timing"] = f"app;dur={(time.perf_counter() - started) * 1000:.2f}"
-        return response
+    async def observe(request: Request, call_next):
+        """Trace ID, body limit, access log and the last-resort error handler for every exchange (D-11)."""
+        tid = obs.accept_trace_id(request.headers.get("x-trace-id"))
+        request.state.trace_id = tid
+        with obs.bound(trace_id=tid):
+            started = time.perf_counter()
+            length = request.headers.get("content-length")
+            if length and int(length) > settings.max_body_bytes:
+                request.state.error_code = "BODY_TOO_LARGE"
+                response = JSONResponse(errors.envelope("BODY_TOO_LARGE", "Request body exceeds 1 MiB."), 413)
+            else:
+                try:
+                    response = await call_next(request)
+                except Exception:  # noqa: BLE001 - anything unhandled becomes a catalogued, traceable 500
+                    request.state.error_code = "INTERNAL"
+                    log.exception("unhandled error", extra={"error_code": "INTERNAL"})
+                    response = JSONResponse(errors.envelope(
+                        "INTERNAL", f"Something went wrong. Quote trace ID {tid} when reporting it.", True,
+                        trace_id=tid), 500)
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            if request.url.path.endswith("/heartbeat"):
+                # Agents subtract this from their measured round trip, so the RTT they report is the network's,
+                # not the coordinator's database write (spec 7.2 fallback input when no tunnel RTT is known).
+                response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.2f}"
+            response.headers["X-Trace-Id"] = tid
+            _access_log(request, response.status_code, elapsed_ms)
+            return response
 
     register(app)
     compat.register(app)
@@ -94,6 +114,25 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
 
 def S(request: Request) -> Store:
     return request.app.state.store
+
+
+# Routine node traffic (every node calls these every few seconds) is logged at debug level.
+_ROUTINE = ("/heartbeat", "/model-file")
+
+
+def _access_log(request: Request, status: int, elapsed_ms: float) -> None:
+    """One line per HTTP exchange. The path is logged without its query string, which can carry secrets."""
+    code = getattr(request.state, "error_code", None)
+    if status >= 500:
+        level = logging.ERROR
+    elif status >= 400:
+        level = logging.INFO
+    else:
+        level = logging.DEBUG if request.url.path.endswith(_ROUTINE) else logging.INFO
+    # The node is identified inside the endpoint, after this middleware's context was copied, so bind it here.
+    with obs.bound(node_id=getattr(request.state, "node_id", None)):
+        obs.log(access_log, level, f"{request.method} {request.url.path} {status}", error_code=code,
+                method=request.method, path=request.url.path, status=status, duration_ms=round(elapsed_ms, 2))
 
 
 def _restore_deployments(app) -> None:
@@ -525,6 +564,9 @@ def register(app: FastAPI) -> None:
                       (did, row["group_id"], row["member_id"], body.name, body.public_key, verifier(token),
                        body.capabilities.model_dump_json(), json.dumps(policy), "active", iso(now()), iso(now())))
             store.audit(c, row["group_id"], row["member_id"], "device.enroll", did)
+        with obs.bound(node_id=did):
+            obs.log(log, logging.INFO, "node enrolled", os=body.capabilities.os, arch=body.capabilities.arch,
+                    tunnel_certificate=has_cert)
         return {"device_id": did, "device_token": token, "group_id": row["group_id"],
                 "heartbeat_interval_s": settings.heartbeat_interval_s, "lease_s": 30,
                 "coordinator_cert_pem": request.app.state.tunnels.identity.cert_pem,
@@ -535,6 +577,8 @@ def register(app: FastAPI) -> None:
         d = S(request).one("SELECT * FROM devices WHERE id = ?", (device_id,))
         if not token or not d or not matches(token, d["token_verifier"]):
             raise ApiError(401, "UNAUTHENTICATED", "Invalid device credential.")
+        request.state.node_id = device_id
+        obs.node_id.set(device_id)
         if d["status"] != "active":
             raise ApiError(403, "DEVICE_REVOKED", "This device is no longer authorized.")
         return d
@@ -560,6 +604,8 @@ def register(app: FastAPI) -> None:
         manifest = pending["manifests"].get(device_id) if pending else None
         return {"policy": public_policy, "policy_rev": d["policy_rev"], "lease_s": 30,
                 "assignment": {"deployment_id": g.deployment_id, "layers": stage["layers"]} if stage else None,
+                # Lets the agent tag its own and its worker's log lines with the requests it is serving (D-11).
+                "active_request_ids": sorted(g.running) if stage else [],
                 "prefetch": {"deployment_id": pending["deployment_id"], **manifest} if manifest else None}
 
     @app.get("/api/v1/devices/{device_id}/model-file", tags=["devices"])
@@ -906,6 +952,9 @@ def admit_request(request: Request, p: Principal, body: RequestIn) -> dict:
                    payload_fp, iso(now()), iso(now())))
         store.audit(c, p.group_id, p.member_id, "request.admit", rid)
     sched.admit(p.group_id, p.member_id, rid)
+    with obs.bound(request_id=rid, deployment_id=g.deployment_id):
+        obs.log(log, logging.INFO, "request admitted", visibility=body.visibility.value,
+                max_output_tokens=body.max_output_tokens, context_messages=len(ids))
     return _admission_out(store.one("SELECT * FROM requests WHERE id = ?", (rid,)))
 
 

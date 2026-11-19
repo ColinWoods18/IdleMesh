@@ -98,7 +98,18 @@ impl Prefetcher {
     }
 
     /// Start work for a new manifest; repeated offers of the same deployment are ignored.
-    pub fn offer(&mut self, manifest: &serde_json::Value) -> Option<String> {
+    pub fn offer(&mut self, manifest: &serde_json::Value) {
+        if let Some(line) = self.start(manifest) {
+            if line.starts_with("prefetch refused") {
+                let code = if line.contains("license") { "LICENSE_NOT_ACCEPTED" } else { "PREFETCH_FAILED" };
+                tracing::warn!(error_code = code, "{line}");
+            } else {
+                tracing::info!("{line}");
+            }
+        }
+    }
+
+    fn start(&mut self, manifest: &serde_json::Value) -> Option<String> {
         let dep = manifest["deployment_id"].as_str()?.to_string();
         if self.active.as_deref() == Some(dep.as_str()) {
             return None;
@@ -130,13 +141,18 @@ impl Prefetcher {
             let mut s = status.lock().unwrap();
             if let Some(st) = s.as_mut().filter(|st| st.deployment_id == dep) {
                 match result {
-                    Ok(()) => st.state = "ready",
+                    Ok(()) => {
+                        st.state = "ready";
+                        tracing::info!(deployment_id = %dep, "prefetch ready: {dep} ({} of {} bytes)",
+                                       st.bytes_done, st.bytes_total);
+                    }
                     Err(e) => {
                         st.state = "failed";
                         st.error = Some(e.chars().take(280).collect());
+                        tracing::warn!(error_code = "PREFETCH_FAILED", deployment_id = %dep,
+                                       "prefetch failed: {dep} ({} of {} bytes): {e}", st.bytes_done, st.bytes_total);
                     }
                 }
-                println!("prefetch {}: {} ({} of {} bytes)", st.state, dep, st.bytes_done, st.bytes_total);
             }
         });
         Some(format!("prefetch started: {count} tensors, {:.1} MB", total as f64 / 1e6))
@@ -279,10 +295,10 @@ mod tests {
                                     Source { coordinator: "http://127.0.0.1:1".into(), device_token: "t".into(),
                                                      fingerprint: None });
         let m = serde_json::json!({"deployment_id": "dep_1", "license": "apache-2.0", "url": "/x", "tensors": []});
-        assert!(p.offer(&m).unwrap().contains("not accepted"));
+        assert!(p.start(&m).unwrap().contains("not accepted"));
         let s = p.status().unwrap();
         assert_eq!((s.state, s.deployment_id.as_str()), ("failed", "dep_1"));
-        assert!(p.offer(&m).is_none()); // same deployment is not retried in a loop
+        assert!(p.start(&m).is_none()); // same deployment is not retried in a loop
         assert!(!dir.exists());
     }
 }

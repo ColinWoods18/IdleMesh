@@ -105,7 +105,7 @@ pub fn spawn(listen: &str, worker_port: u16, config: ServerConfig) -> Result<Arc
     let c = counters.clone();
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
     std::thread::Builder::new()
-        .name("difa-tunnel".into())
+        .name("idlemesh-tunnel".into())
         .spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()
                 .expect("tunnel runtime");
@@ -120,12 +120,14 @@ pub fn spawn(listen: &str, worker_port: u16, config: ServerConfig) -> Result<Arc
                             Ok(Ok(tls)) => tls,
                             Ok(Err(e)) => {
                                 c.rejected.fetch_add(1, Ordering::Relaxed);
-                                println!("tunnel: rejected {peer}: {e}");
+                                tracing::warn!(error_code = "TUNNEL_HANDSHAKE_FAILED", peer = %peer,
+                                               "tunnel: rejected {peer}: {e}");
                                 return;
                             }
                             Err(_) => {
                                 c.rejected.fetch_add(1, Ordering::Relaxed);
-                                println!("tunnel: handshake timeout from {peer}");
+                                tracing::warn!(error_code = "TUNNEL_HANDSHAKE_TIMEOUT", peer = %peer,
+                                               "tunnel: handshake timeout from {peer}");
                                 return;
                             }
                         };
@@ -135,7 +137,8 @@ pub fn spawn(listen: &str, worker_port: u16, config: ServerConfig) -> Result<Arc
                                 let _ = upstream.set_nodelay(true);
                                 let _ = tokio::io::copy_bidirectional(&mut tls, &mut upstream).await;
                             }
-                            Err(e) => println!("tunnel: worker not reachable on loopback: {e}"),
+                            Err(e) => tracing::warn!(error_code = "TUNNEL_WORKER_UNREACHABLE",
+                                                     "tunnel: worker not reachable on loopback: {e}"),
                         }
                     });
                 }

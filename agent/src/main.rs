@@ -5,6 +5,7 @@
 //! tunnel.rs).
 
 mod control;
+mod logging;
 mod policy;
 mod prefetch;
 mod probe;
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tracing::{error, info, warn};
 use worker::{Worker, WorkerConfig};
 
 const DEFAULT_BACKEND_DIGEST: &str = "fake-runtime-0.1";
@@ -28,6 +30,18 @@ const GB: f64 = 1e9;
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+    /// Log level: error, warn, info, debug or trace.
+    #[arg(long, global = true, env = "IDLEMESH_LOG", default_value = "info")]
+    log_level: String,
+    /// Directory for the JSON log file (default: a logs folder next to the state file).
+    #[arg(long, global = true)]
+    log_dir: Option<PathBuf>,
+    /// Rotate the log file at this size, in MB.
+    #[arg(long, global = true, default_value_t = 10)]
+    log_max_mb: u64,
+    /// Number of rotated log files to keep.
+    #[arg(long, global = true, default_value_t = 5)]
+    log_keep: usize,
 }
 
 #[derive(Subcommand)]
@@ -156,6 +170,9 @@ struct HeartbeatReply {
     assignment: Option<serde_json::Value>,
     #[serde(default)]
     prefetch: Option<serde_json::Value>,
+    /// Requests the coordinator is running on this node's deployment, for log correlation.
+    #[serde(default)]
+    active_request_ids: Vec<String>,
 }
 
 fn take_probe(simulate: &Option<String>) -> Result<probe::Probe, String> {
@@ -247,8 +264,10 @@ fn enroll(coordinator: String, fingerprint: Option<String>, code: String, name: 
         coordinator_cert_pem: reply["coordinator_cert_pem"].as_str().map(str::to_string),
         coordinator_fingerprint: seen.lock().unwrap().clone(),
     };
-    save_state(&state, &st).map_err(|e| e.to_string())?;
-    println!("enrolled device {} as '{}'; state saved to {}", st.device_id, st.name, state.display());
+    save_state(&state, &st).map_err(|e| format!("cannot save the state file: {e}"))?;
+    logging::set_node(&st.device_id);
+    info!(os = %p.os, arch = %p.arch, "enrolled device {} as '{}'; state saved to {}", st.device_id, st.name,
+          state.display());
     Ok(())
 }
 
@@ -268,7 +287,7 @@ fn secure_worker(mut w: WorkerConfig, st: &State, opts: &RunOptions) -> Result<W
             };
             let identity = tunnel::Identity { cert_pem: cert.clone(), key_pem: key.clone() };
             tunnel::spawn(listen, w.port, tunnel::server_config(&identity, coord)?)?;
-            println!("tunnel: mutual TLS on {listen} (advertised {advertise}); worker on 127.0.0.1:{}", w.port);
+            info!("tunnel: mutual TLS on {listen} (advertised {advertise}); worker on 127.0.0.1:{}", w.port);
             w.advertise = advertise.clone();
             w.transport = "mtls";
         }
@@ -283,7 +302,9 @@ fn secure_worker(mut w: WorkerConfig, st: &State, opts: &RunOptions) -> Result<W
 
 fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
     let raw = std::fs::read(&state_path).map_err(|e| format!("cannot read {}: {e}", state_path.display()))?;
-    let st: State = serde_json::from_slice(&raw).map_err(|e| e.to_string())?;
+    let st: State = serde_json::from_slice(&raw)
+        .map_err(|e| format!("the state file {} is not valid ({e}); enroll this device again", state_path.display()))?;
+    logging::set_node(&st.device_id);
     let (http, _) = control::client(&st.coordinator, st.coordinator_fingerprint.as_deref(), CONTROL_TIMEOUT,
                                     CONTROL_TIMEOUT)
         .map_err(|e| format!("{e} (enroll this device again with the coordinator's https address)"))?;
@@ -300,12 +321,13 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
         let threads = opts.worker.as_ref().map(|w| w.threads);
         match probe::decode_probe(bench, model, threads) {
             Ok(tps) => {
-                println!("decode probe: {tps:.1} tokens/s on {}", if threads.is_some() { "cpu" } else { "default backend" });
+                info!(tokens_per_s = tps, "decode probe: {tps:.1} tokens/s on {}",
+                      if threads.is_some() { "cpu" } else { "default backend" });
                 Some(json!({"model": catalog, "tokens_per_s": tps,
                             "backend": if threads.is_some() { "cpu" } else { "default" }, "threads": threads}))
             }
             Err(e) => {
-                println!("decode probe unavailable: {e}");
+                warn!(error_code = "PROBE_FAILED", "decode probe unavailable: {e}");
                 None
             }
         }
@@ -332,17 +354,14 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
             if let Some(w) = worker.as_mut() {
                 w.halt("agent stopped");
             }
-            println!("agent stopping: worker halted");
+            info!("agent stopping: worker halted");
             return Ok(());
         }
         // Watchdog: every 250 ms, independent of heartbeats and coordinator reachability.
         if let Some(w) = worker.as_mut() {
             let should_run = !paused && lease.valid(Instant::now());
-            if let Some(line) = w.tick(should_run, effective.memory_cap_bytes) {
-                println!("{line}");
-                if line.starts_with("worker killed") {
-                    next_beat = Instant::now(); // report the capacity change immediately
-                }
+            if w.tick(should_run, effective.memory_cap_bytes) == worker::Change::Killed {
+                next_beat = Instant::now(); // report the capacity change immediately
             }
         }
         if Instant::now() >= next_beat {
@@ -361,38 +380,53 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
                 body["prefetch"] = s.json();
             }
             let started = Instant::now();
-            match http.post(&url).bearer_auth(&st.device_token).json(&body).send() {
+            let trace_id = logging::new_trace_id();
+            match http.post(&url).bearer_auth(&st.device_token).header("X-Trace-Id", &trace_id).json(&body).send() {
                 Ok(resp) if resp.status().is_success() => {
                     let server_ms = control::server_time_ms(
                         resp.headers().get("server-timing").and_then(|v| v.to_str().ok()));
                     last_rtt = rtt_window.push(started.elapsed().as_secs_f64() * 1000.0, server_ms);
-                    let reply: HeartbeatReply = resp.json().map_err(|e| e.to_string())?;
+                    let reply: HeartbeatReply = resp.json()
+                        .map_err(|e| format!("the coordinator sent an invalid heartbeat reply: {e}"))?;
                     effective = merge(&st.owner_policy, &reply.policy);
                     paused = effective_paused(&effective, p.power, &mut battery_hold);
                     lease.renew(Instant::now(), Duration::from_secs(reply.lease_s));
-                    if let Some(line) = reply.prefetch.as_ref().and_then(|m| prefetcher.offer(m)) {
-                        println!("{line}");
+                    if let Some(m) = reply.prefetch.as_ref() {
+                        prefetcher.offer(m);
                     }
                     if reply.assignment != assignment {
-                        println!("assignment: {}", reply.assignment.as_ref().map_or("none".into(), |a| a.to_string()));
+                        logging::set_deployment(reply.assignment.as_ref().and_then(|a| a["deployment_id"].as_str()));
+                        info!(trace_id = %trace_id, "assignment: {}",
+                              reply.assignment.as_ref().map_or("none".into(), |a| a.to_string()));
                         assignment = reply.assignment;
                     }
-                    println!("heartbeat ok: paused={paused} power={} cap={:.2}GB rtt={last_rtt}ms",
-                             p.power.label(), effective.memory_cap_bytes as f64 / GB);
+                    if logging::set_requests(reply.active_request_ids.clone()) {
+                        info!(trace_id = %trace_id, "serving requests: {}",
+                              if reply.active_request_ids.is_empty() { "none".into() }
+                              else { reply.active_request_ids.join(", ") });
+                    }
+                    info!(trace_id = %trace_id, paused, rtt_ms = last_rtt,
+                          "heartbeat ok: paused={paused} power={} cap={:.2}GB rtt={last_rtt}ms",
+                          p.power.label(), effective.memory_cap_bytes as f64 / GB);
                 }
                 Ok(resp) if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 => {
-                    println!("device authorization revoked: stopping all local work");
+                    error!(error_code = "DEVICE_REVOKED", trace_id = %trace_id,
+                           "device authorization revoked: stopping all local work");
                     if let Some(w) = worker.as_mut() {
                         w.halt("authorization revoked");
                     }
                     return Err("revoked".into());
                 }
-                Ok(resp) => println!("heartbeat rejected: {}", resp.status()),
-                Err(e) => println!("coordinator unreachable: {e}"),
+                Ok(resp) => warn!(error_code = "HEARTBEAT_REJECTED", trace_id = %trace_id,
+                                  "heartbeat rejected: {}", resp.status()),
+                Err(e) => warn!(error_code = "CONTROL_UNREACHABLE", trace_id = %trace_id,
+                                "coordinator unreachable: {e}"),
             }
             if assignment.is_some() && !lease.valid(Instant::now()) {
-                println!("lease expired: releasing assigned work");
+                warn!(error_code = "LEASE_EXPIRED", "lease expired: releasing assigned work");
                 assignment = None;
+                logging::set_deployment(None);
+                logging::set_requests(Vec::new());
             }
             count += 1;
             if opts.beats.is_some_and(|b| count >= b) {
@@ -404,8 +438,28 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
     }
 }
 
+/// The JSON log goes next to the state file unless --log-dir says otherwise; `probe` and `tunnel` have no
+/// state file and log to the console only unless --log-dir is given.
+fn log_options(cli: &Cli) -> Result<logging::Options, String> {
+    let state_logs = |state: &Path| state.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."))
+        .join("logs");
+    let dir = cli.log_dir.clone().or_else(|| match &cli.cmd {
+        Cmd::Enroll { state, .. } | Cmd::Run { state, .. } => Some(state_logs(state)),
+        _ => None,
+    });
+    Ok(logging::Options { level: logging::parse_level(&cli.log_level)?, dir, max_bytes: cli.log_max_mb * 1_000_000,
+                          keep: cli.log_keep })
+}
+
 fn main() {
-    let result = match Cli::parse().cmd {
+    let cli = Cli::parse();
+    if let Err(e) = log_options(&cli).and_then(|o| logging::init(&o)) {
+        eprintln!("idlemesh-agent: {e}");
+        std::process::exit(1);
+    }
+    info!(target: logging::FILE_ONLY, version = env!("CARGO_PKG_VERSION"), os = std::env::consts::OS,
+          "agent starting");
+    let result = match cli.cmd {
         Cmd::Enroll { coordinator, coordinator_fingerprint, code, name, memory_cap_gb, allow_battery, state, simulate,
                       backend_digest } => {
             enroll(coordinator, coordinator_fingerprint, code, name, memory_cap_gb, allow_battery, state, simulate,
@@ -429,7 +483,7 @@ fn main() {
             let read = |p: &PathBuf| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
             let identity = tunnel::Identity { cert_pem: read(&cert)?, key_pem: read(&key)? };
             tunnel::spawn(&listen, worker_port, tunnel::server_config(&identity, &read(&peer_cert)?)?)?;
-            println!("tunnel: mutual TLS on {listen} -> 127.0.0.1:{worker_port}");
+            info!("tunnel: mutual TLS on {listen} -> 127.0.0.1:{worker_port}");
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let flag = stop.clone();
             let _ = ctrlc::set_handler(move || flag.store(true, std::sync::atomic::Ordering::SeqCst));
@@ -444,6 +498,7 @@ fn main() {
         }),
     };
     if let Err(e) = result {
+        error!(target: logging::FILE_ONLY, "exiting with error: {e}");
         eprintln!("idlemesh-agent: {e}");
         std::process::exit(if e == "revoked" { 2 } else { 1 });
     }

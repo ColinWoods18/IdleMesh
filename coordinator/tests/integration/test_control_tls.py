@@ -98,3 +98,15 @@ def test_agent_pins_the_coordinator_certificate(tls_coordinator, tmp_path):
     run = subprocess.run([str(AGENT), "run", "--state", str(state), "--beats", "1"], capture_output=True, text=True,
                          timeout=60)
     assert "heartbeat ok" not in run.stdout and "coordinator unreachable" in run.stdout, run.stdout
+
+    # The agent's JSON log (S1.6): next to the state file, one parseable object per line, tagged with the
+    # node, heartbeats carrying the trace ID they sent, failures carrying a catalogued code, no secrets.
+    log_file = tmp_path / "logs" / "idlemesh-agent.log"
+    raw = log_file.read_text(encoding="utf-8")
+    lines = [json.loads(x) for x in raw.splitlines()]
+    assert all(x["component"] == "agent" and x["level"] in ("info", "warn", "error") for x in lines)
+    beats = [x for x in lines if x["message"].startswith("heartbeat ok")]
+    assert len(beats) == 3 and all(x["node_id"] == saved["device_id"] and len(x["trace_id"]) == 16 for x in beats)
+    assert any(x.get("error_code") == "CONTROL_UNREACHABLE" for x in lines)
+    for secret in (saved["device_token"], out["code"], "PRIVATE KEY"):
+        assert secret not in raw

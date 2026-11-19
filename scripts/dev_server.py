@@ -13,6 +13,8 @@ The control API is served over HTTPS with a self-signed certificate kept in the 
 enrollment code; agents refuse to enroll with a coordinator presenting any other certificate.
   --model-source coordinator   devices prefetch their weights from this coordinator instead of the
                      model's origin (good for a LAN; FR 30)
+  --site-config FILE site configuration (org and site IDs, logging, queue limits); see
+                     config/example.site.yaml. Without it, logs are JSON on the console only.
 
 Usage: python scripts/dev_server.py [--port 8765] [--fresh] [--llamacpp] [--host 192.168.1.10]
 """
@@ -31,6 +33,7 @@ parser.add_argument("--llamacpp", action="store_true", help="use the llama.cpp a
 parser.add_argument("--host", default="127.0.0.1", help="listen address (default loopback only)")
 parser.add_argument("--model-source", choices=["origin", "coordinator"], default=None)
 parser.add_argument("--insecure-http", action="store_true", help="plain HTTP; allowed only on loopback")
+parser.add_argument("--site-config", help="site configuration YAML (see config/example.site.yaml)")
 args = parser.parse_args()
 loopback = args.host in ("127.0.0.1", "::1", "localhost")
 if args.insecure_http and not loopback:
@@ -44,6 +47,14 @@ if args.llamacpp:
     os.environ.setdefault("IDLEMESH_LLAMACPP_LOCAL_DEVICE", "Mac Studio")
 if args.model_source:
     os.environ["IDLEMESH_MODEL_SOURCE"] = args.model_source
+if args.site_config:
+    from idlemesh_coord import site_config  # noqa: E402
+
+    try:  # fail here with a readable message rather than inside the server
+        site_config.load(args.site_config)
+    except site_config.SiteConfigError as e:
+        sys.exit(str(e))
+    os.environ[site_config.ENV] = str(Path(args.site_config).resolve())
 data = Path(os.environ.get("IDLEMESH_DATA_DIR", Path.home() / ".local" / "share" / "difa"))
 data.mkdir(parents=True, exist_ok=True)
 tls = {}
@@ -71,5 +82,6 @@ from idlemesh_coord.config import CONTROL_KEEP_ALIVE_S  # noqa: E402
 
 # Keep idle connections open well past the 5-second heartbeat interval. With uvicorn's default (5 s) nearly
 # every heartbeat paid a new TCP connection and TLS handshake (Phase 1 Round 6).
-uvicorn.run("idlemesh_coord.api.app:app_from_env", factory=True, host=args.host, port=args.port, log_level="info",
+# log_config=None: the app factory sets up JSON logging (idlemesh_coord.obs) for uvicorn's loggers too.
+uvicorn.run("idlemesh_coord.api.app:app_from_env", factory=True, host=args.host, port=args.port, log_config=None,
             timeout_keep_alive=CONTROL_KEEP_ALIVE_S, **tls)

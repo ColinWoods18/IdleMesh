@@ -7,3 +7,5 @@ __pycache__/
 *.sqlite3-*
 idlemesh-agent-state.json
 agent/target/
+logs/
+config/logs/

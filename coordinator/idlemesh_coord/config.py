@@ -52,3 +52,15 @@ class Settings:
     fake_token_delay_s: float = field(default_factory=lambda: _env_float("IDLEMESH_FAKE_TOKEN_DELAY", 0.02))
     argon2_fast: bool = field(default_factory=lambda: os.environ.get("IDLEMESH_ARGON2_FAST") == "1")
     cookie_secure: bool = field(default_factory=lambda: os.environ.get("IDLEMESH_COOKIE_SECURE", "0") == "1")
+    # Site identity from the site config file (S1.12); None when the coordinator runs without one.
+    org_id: str | None = None
+    site_id: str | None = None
+
+    @classmethod
+    def from_site(cls, site, **overrides) -> "Settings":
+        """Settings with the site file's values applied (see config/example.site.yaml)."""
+        q = site.queue
+        return cls(**{"org_id": site.site.org_id, "site_id": site.site.site_id, "per_member_queue": q.per_user,
+                      "group_queue": q.total, "active_generations": q.active_generations,
+                      "wait_deadline_s": q.wait_deadline_s, "active_deadline_s": q.active_deadline_s,
+                      **overrides})

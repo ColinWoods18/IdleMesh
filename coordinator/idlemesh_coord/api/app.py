@@ -66,6 +66,7 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
     app = FastAPI(title="DIFA Coordinator", version="0.1.0", lifespan=lifespan,
                   description="Distributed Inference For All coordinator prototype. Fake runtime only.")
     app.state.settings, app.state.runtime = settings, runtime
+    app.state.site = None  # the parsed site config, when the coordinator was started with one (S1.12)
     app.state.store = Store(settings.db_path)
     tunnel_dir = settings.tunnel_dir or os.path.dirname(os.path.abspath(settings.db_path))
     app.state.tunnels = TunnelManager(CoordinatorIdentity(tunnel_dir))
@@ -965,4 +966,18 @@ def _admission_out(r) -> dict:
 
 
 def app_from_env() -> FastAPI:
-    return create_app()
+    """The uvicorn factory: reads the site config (IDLEMESH_SITE_CONFIG), sets up JSON logging, builds the app."""
+    from .. import site_config  # local import: tests build apps directly and need no YAML
+
+    site = site_config.from_env()
+    if site:
+        obs.setup_logging(site.logging.level, site.log_file(), int(site.logging.max_mb * 1024 * 1024),
+                          site.logging.keep)
+        obs.set_site(site.site.org_id, site.site.site_id)
+    else:
+        obs.setup_logging("info")
+    app = create_app(Settings.from_site(site) if site else None)
+    app.state.site = site
+    obs.log(log, logging.INFO, "coordinator starting", runtime=type(app.state.runtime).__name__,
+            site_config=os.environ.get(site_config.ENV) is not None, telemetry_tier=site.telemetry.tier if site else None)
+    return app

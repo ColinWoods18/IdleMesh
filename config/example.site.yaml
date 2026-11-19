@@ -1,0 +1,63 @@
+# IdleMesh site configuration (example).
+#
+# Copy this file, edit it for your site, and point the coordinator at it:
+#   IDLEMESH_SITE_CONFIG=/path/to/site.yaml   or   python scripts/dev_server.py --site-config site.yaml
+#
+# Unknown keys are rejected, so a typo fails loudly instead of being ignored.
+# Values marked (planned) are validated and stored now, and take effect in the sprint named.
+
+site:
+  org_id: example-university        # one organisation (a university, or a customer)
+  site_id: main-campus              # one coordinator's site within it
+  name: Example University, main campus
+
+logging:                            # D-11
+  level: info                       # error, warn, info, debug
+  file: logs/coordinator.log        # relative to this file's directory; leave empty for console only
+  max_mb: 10                        # rotate at this size
+  keep: 5                           # rotated files to keep
+
+telemetry:                          # D-11, privacy-office review pending (Sprints.md long-lead items)
+  tier: operational                 # minimal | operational | research. research adds idle traces for the paper.
+  interval_s: 60                    # (planned, S2) how often nodes send idle and health samples
+  retention_days: 90                # (planned, S2) raw samples older than this are deleted
+  pseudonymize_nodes: true          # (planned, S2) node IDs in exported data are salted hashes
+
+idle:                               # (planned, S2 and S4.9) when a workstation counts as idle
+  idle_after_s: 600                 # no keyboard or mouse input for this long
+  ramp_s: 1800                      # contribution level rises from minimum to maximum over this time (D-12)
+  yield_level: 0.02                 # level a node drops to when its user returns (D-12)
+  yield_within_ms: 1000
+
+contribution:                       # (planned, S4.9) defaults; owners can only lower them on their machine
+  max_memory_fraction: 0.5          # of the machine's RAM
+  max_cpu_fraction: 0.75
+  allow_battery: false
+  windows:                          # time windows when nodes may contribute more (local time on the node)
+    - name: overnight
+      days: [mon, tue, wed, thu, fri, sat, sun]
+      start: "20:00"
+      end: "07:00"
+      max_level: 1.0
+    - name: daytime
+      days: [mon, tue, wed, thu, fri]
+      start: "07:00"
+      end: "20:00"
+      max_level: 0.5
+
+probes:                             # (planned, S5)
+  rtt_every_s: 300
+  bandwidth_every_h: 24
+  bandwidth_off_hours_only: true
+
+fleet:                              # (planned, S8.9, D-12)
+  min_active_nodes: 1
+  max_active_nodes: 50
+  warm_standbys: 1
+
+queue:                              # applies now: the student fair queue
+  per_user: 2                       # waiting requests per user
+  total: 10                         # waiting requests across everyone
+  active_generations: 1             # requests generating at once (grows with replicas, S7 and S8)
+  wait_deadline_s: 600
+  active_deadline_s: 300

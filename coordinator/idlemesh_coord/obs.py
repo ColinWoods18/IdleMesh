@@ -37,6 +37,14 @@ node_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("node_id", 
 deployment_id: contextvars.ContextVar[str | None] = contextvars.ContextVar("deployment_id", default=None)
 _IDS = {"trace_id": trace_id, "request_id": request_id, "node_id": node_id, "deployment_id": deployment_id}
 
+# Fixed for the process: which organisation and site this coordinator serves (from the site config).
+_SITE: dict[str, str] = {}
+
+
+def set_site(org_id: str, site_id: str) -> None:
+    _SITE.update(org_id=org_id, site_id=site_id)
+
+
 _TRACE_ID_OK = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
@@ -119,6 +127,7 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
             "version": __version__,
+            **_SITE,
         }
         for k, var in _IDS.items():
             v = getattr(record, k, None) or var.get()

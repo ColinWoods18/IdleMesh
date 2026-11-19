@@ -41,6 +41,22 @@ migrated on start). The `proto/` telemetry draft now matches what is sent (`sess
 script, and an end-to-end test where a real agent keeps sampling through a coordinator outage and every
 buffered sample arrives afterwards with no gap.
 
+**Test suite additions (pytest, also in VS Code's Testing panel):**
+- Unit tests for modules that were only covered through the API: `telemetry` (node keys, salt file,
+  consent, ingest, deduplication across time zones, timeline, retention), `security`, `tokens`, `store`
+  (schema, rollback, foreign keys, branch messages), `partition` (tensor hashes, side-car cache,
+  manifests), the scheduler's event `Channel`, `FakeRuntime` and `Settings`. 130 unit tests in all.
+- Smoke tests, `pytest -m smoke` (about 3 s): the main path (sign-in, device enrolment with consent,
+  heartbeat, telemetry, deployment, streamed chat, OpenAI-compatible call) run in-process and against
+  the coordinator started as a real uvicorn process with a throwaway database. With
+  `IDLEMESH_SMOKE_URL` (and `IDLEMESH_SMOKE_CA` for its self-signed certificate) the same walk checks
+  a coordinator already running elsewhere. CI runs the smoke tests first, before the agent build.
+- **Fix found by the new tests:** `Passwords.verify` accepted an empty stored hash when given the
+  dummy passphrase written in the source (the timing-equalisation path). No code path stores an empty
+  hash, so it was not reachable, but an empty hash now never verifies.
+- Full suite on the dev PC: 171 passed, 8 skipped (7 need the agent or llama.cpp build, 1 needs a
+  remote URL).
+
 ### Decisions
 
 | ID | Decision | Why | Status |

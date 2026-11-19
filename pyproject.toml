@@ -25,4 +25,8 @@ where = ["coordinator"]
 
 [tool.pytest.ini_options]
 testpaths = ["coordinator/tests"]
-pythonpath = ["coordinator"]
+pythonpath = ["coordinator", "coordinator/tests"]
+addopts = "--strict-markers"
+markers = [
+  "smoke: fast end-to-end check that the coordinator starts and its main path works (pytest -m smoke)",
+]

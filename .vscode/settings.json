@@ -1,0 +1,8 @@
+{
+  // Testing panel: discovers coordinator/tests through pyproject.toml ([tool.pytest.ini_options]).
+  // Run only the smoke tests from a terminal with: python -m pytest -m smoke
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": [],
+  "python.testing.cwd": "${workspaceFolder}"
+}

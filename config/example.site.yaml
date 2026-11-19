@@ -19,12 +19,12 @@ logging:                            # D-11
 
 telemetry:                          # D-11, privacy-office review pending (Sprints.md long-lead items)
   tier: operational                 # minimal | operational | research. research adds idle traces for the paper.
-  interval_s: 60                    # (planned, S2) how often nodes send idle and health samples
-  retention_days: 90                # (planned, S2) raw samples older than this are deleted
-  pseudonymize_nodes: true          # (planned, S2) node IDs in exported data are salted hashes
+  interval_s: 60                    # how often nodes take an idle sample (sent to agents with each heartbeat)
+  retention_days: 90                # idle samples and state changes older than this are deleted (hourly)
+  pseudonymize_nodes: true          # telemetry is stored under a salted hash of the node ID (salt kept next to the database)
 
-idle:                               # (planned, S2 and S4.9) when a workstation counts as idle
-  idle_after_s: 600                 # no keyboard or mouse input for this long
+idle:                               # when a workstation counts as idle; the rest is planned for S4.9
+  idle_after_s: 600                 # no keyboard or mouse input for this long, or a locked session (applies now)
   ramp_s: 1800                      # contribution level rises from minimum to maximum over this time (D-12)
   yield_level: 0.02                 # level a node drops to when its user returns (D-12)
   yield_within_ms: 1000

@@ -108,7 +108,38 @@ fn detect_power() -> Power {
             (None, p) => Power::Battery(p),
         };
     }
-    Power::Unknown // Windows probe is a Phase 1 item
+    windows_power()
+}
+
+/// Windows power status (S2.2) from `GetSystemPowerStatus`.
+#[cfg(windows)]
+fn windows_power() -> Power {
+    use windows_sys::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    // SAFETY: SYSTEM_POWER_STATUS is plain data; the API fills it in.
+    let mut s: SYSTEM_POWER_STATUS = unsafe { std::mem::zeroed() };
+    if unsafe { GetSystemPowerStatus(&mut s) } == 0 {
+        return Power::Unknown;
+    }
+    windows_power_from(s.ACLineStatus, s.BatteryFlag, s.BatteryLifePercent)
+}
+
+#[cfg(not(windows))]
+fn windows_power() -> Power {
+    Power::Unknown
+}
+
+/// ACLineStatus is 0 (on battery), 1 (on AC) or 255 (unknown); BatteryFlag 128 means no battery;
+/// BatteryLifePercent is 0 to 100, or 255 when unknown.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_power_from(ac_line: u8, battery_flag: u8, pct: u8) -> Power {
+    const NO_BATTERY: u8 = 128;
+    let pct = (pct <= 100).then_some(f64::from(pct));
+    match ac_line {
+        1 => Power::Ac,
+        0 => Power::Battery(pct),
+        _ if battery_flag & NO_BATTERY != 0 => Power::Ac, // a desktop that cannot tell: it has no battery
+        _ => Power::Unknown,
+    }
 }
 
 fn parse_pct(text: &str) -> Option<f64> {
@@ -141,6 +172,21 @@ mod tests {
     fn parses_battery_percentage() {
         let sample = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t76%; discharging;";
         assert_eq!(parse_pct(sample), Some(76.0));
+    }
+
+    #[test]
+    fn windows_power_status_is_decoded() {
+        assert_eq!(windows_power_from(1, 8, 100), Power::Ac); // charging laptop
+        assert_eq!(windows_power_from(0, 0, 76), Power::Battery(Some(76.0)));
+        assert_eq!(windows_power_from(0, 0, 255), Power::Battery(None));
+        assert_eq!(windows_power_from(255, 128, 255), Power::Ac); // desktop without a battery
+        assert_eq!(windows_power_from(255, 1, 50), Power::Unknown);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_power_is_known() {
+        assert_ne!(detect_power(), Power::Unknown);
     }
 
     #[test]

@@ -15,6 +15,48 @@ and why.
 
 ---
 
+## 2026-11-19 — Sprint 2: Windows idle monitor and telemetry pipeline
+
+Status: **on branch `sprint-2`.** Story-by-story status is in
+[Sprints.md](Sprints.md#sprint-2--windows-idle-monitor-and-telemetry-pipeline).
+
+### What changed
+
+| Story | Change |
+|---|---|
+| S2.1 | Agent `idle` module: seconds since the last keyboard or mouse input (`GetLastInputInfo`), session lock state (Terminal Services session flags) and CPU use. `idlemesh-agent idle --watch` prints them once a second for a manual check. macOS and Linux report "unknown" until S3. |
+| S2.2 | Windows power status from `GetSystemPowerStatus`: AC, battery with percentage, or a desktop with no battery. It was "unknown" before, which kept Windows laptops paused unless battery use was allowed. |
+| S2.3 | Idle samples (`kind: idle`) and state changes (`kind: state`) uploaded in batches to `POST /api/v1/devices/{id}/telemetry`, with `schema_version`, stored in new SQLite tables `idle_samples`, `node_events` and `telemetry_drops`, stamped with `org_id`/`site_id` and keyed by a pseudonymous node key. Retention from the site config, applied hourly. The heartbeat reply now tells agents the site's sample interval and idle threshold. `GET /api/v1/groups/{gid}/devices/{id}/idle` returns a device's timeline to its owner or an admin. |
+| S2.4 | Agent on-disk buffer (`telemetry/` next to the state file): records stay until the coordinator accepts them, are sent oldest first, survive restarts, and are capped (20 MB by default, `--telemetry-buffer-mb`); when full the oldest are dropped and the count is reported with the next batch. Ingest is idempotent, so retries never duplicate. |
+| S2.5 | Node states idle, active, sleeping, draining and serving, decided each second; every change is logged and sent as an event. Sleep is detected afterwards as a gap in the wall clock and recorded for the length of the gap. The devices list shows each node's state. |
+| S2.6 | Consent record v0 on the device (`--consent-idle-data`, `--consent-diagnostics` at enrollment; `idlemesh-agent consent` to change it), sent at enrollment and with every heartbeat and stored on the coordinator. The agent collects nothing without consent; the coordinator refuses telemetry without it (`TELEMETRY_NO_CONSENT`). |
+| S2.7 | [docs/runbooks/dev-collection.md](docs/runbooks/dev-collection.md) and `scripts/idle_timeline.py`, which prints each node's timeline from the database. |
+
+New error codes: `TELEMETRY_NO_CONSENT`, `TELEMETRY_UPLOAD_FAILED`, `TELEMETRY_REJECTED`,
+`TELEMETRY_BUFFER_FULL`, `TELEMETRY_BUFFER_IO`. Database schema version 2 (existing databases are
+migrated on start). The `proto/` telemetry draft now matches what is sent (`session_locked`,
+`battery_pct`, `NodeStateChange`).
+
+**Tests:** Rust 45 passed, clippy clean. Python: 9 coordinator telemetry tests, 2 for the timeline
+script, and an end-to-end test where a real agent keeps sampling through a coordinator outage and every
+buffered sample arrives afterwards with no gap.
+
+### Decisions
+
+| ID | Decision | Why | Status |
+|---|---|---|---|
+| D-15 | **No collection without consent.** The owner's consent lives on the device; the agent does not record idle data without it, and the coordinator refuses telemetry from a device whose last reported consent lacks it. Devices enrolled before S2.6 count as not consented. | Consent must hold even if one side is wrong or out of date. Matches D-11 and the privacy review still to come. | Colin |
+| D-16 | **Telemetry is stored under a pseudonymous node key**, an HMAC-SHA256 of the device ID with a per-site salt kept next to the database (`pseudonymize_nodes`, on by default). The API and scripts map keys back to device names on the coordinator; exported data cannot be. | PROJECT_PLAN §6 asks for pseudonymization at collection; this keeps research exports safe without losing per-device views. | Colin |
+| D-17 | **Unknown never counts as idle.** A node is idle only when the OS reports no input for `idle_after_s` or a locked session. The agent must run in the user's own session to see input; as a service (S4.1) it needs a helper in that session. | A wrong "idle" sends work to a machine someone is using; a wrong "active" only loses capacity. | Colin |
+
+### Known gaps
+- Lock state needs Windows 8 or later (Windows 7 reports it inverted); campus machines are newer.
+- The telemetry upload runs in the agent's main loop, limited to five batches per heartbeat, so a long
+  backfill catches up over several heartbeats rather than delaying the memory-cap watchdog.
+- `gpu_util`, contribution level and NodeHealthSample come in S3 and S4.9.
+
+---
+
 ## 2026-11-19 — Sprint 1: foundations, logging and CI
 
 Status: **merged to `main` (PR #1), awaiting Michael's review.** Story-by-story status is in [Sprints.md](Sprints.md#sprint-1--foundations-logging-and-approval).

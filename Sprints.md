@@ -139,6 +139,18 @@ through outages. Idle-data collection starts and keeps running from here on.
 
 **Demo:** the dev machine's idle timeline; an outage test with a full backfill.
 
+**Status** (details in [changes.md](changes.md), "Sprint 2"):
+
+| ID | Status |
+|---|---|
+| S2.1 | ✅ Idle seconds, lock state and CPU use; unit tests. `idlemesh-agent idle --watch` for the manual check on the dev PC |
+| S2.2 | 🟡 Decoding unit-tested; reads AC on the dev laptop. **Unplug it once** to confirm battery and percentage |
+| S2.3 | ✅ Ingest endpoint, SQLite tables, schema version, pseudonymous node key (D-16), `org_id`/`site_id`, retention |
+| S2.4 | ✅ On-disk buffer, capped, oldest dropped first, drops counted; end-to-end outage test passes with no gap. Error events still travel as log lines; `ErrorEvent` records ↪ S3.5 with node health |
+| S2.5 | ✅ State machine and sleep detection with tests; changes logged and sent as events |
+| S2.6 | ✅ Consent record v0 (D-15); the coordinator refuses telemetry without it |
+| S2.7 | 🟡 Runbook and timeline script ready ([docs/runbooks/dev-collection.md](docs/runbooks/dev-collection.md)); **start collection on the dev PC** |
+
 ## Sprint 3 · macOS and Linux idle, GPU profiler, Grafana
 
 **Goal:** idle data, hardware profiles and node health from all three OSes, visible in Grafana.

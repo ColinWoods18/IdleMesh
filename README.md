@@ -7,7 +7,7 @@ shared with everyone else and run immediately when nobody is waiting.
 
 - **Plan:** [PROJECT_PLAN.md](PROJECT_PLAN.md): objectives, architecture, phases, experiments.
 - **What changed from the inherited code:** [changes.md](changes.md).
-- **Delivery plan:** [Sprints.md](Sprints.md). Sprint 1 (foundations, logging, CI) is complete.
+- **Delivery plan:** [Sprints.md](Sprints.md). Sprint 1 (foundations, logging, CI) is complete; Sprint 2 (Windows idle monitor, telemetry) is in progress.
 - **Backend decision (llama.cpp RPC vs. custom pipeline engine):** [docs/research/backend-options.md](docs/research/backend-options.md).
 - **Error codes:** [docs/error-codes.md](docs/error-codes.md). **Licences:** [docs/licenses.md](docs/licenses.md).
 - **History:** this repository evolved from the DIFA prototype by Michael Todd. Its frozen handoff
@@ -24,11 +24,15 @@ The inherited DIFA prototype, restructured and renamed, plus the sprint 1 founda
 - **Observability foundations (D-11):** structured JSON logs from the coordinator and the agent, with
   IDs that follow a request across both, a shared error-code catalog, redaction of secrets and prompt
   text, size-capped log rotation, and a site configuration file.
+- **Idle monitoring (Sprint 2):** the agent reads Windows idle time, lock state, CPU and power, tracks
+  node states (idle, active, sleeping, draining, serving), and sends samples through an on-disk buffer
+  that survives coordinator outages. Collection needs the owner's consent. See
+  [docs/runbooks/dev-collection.md](docs/runbooks/dev-collection.md).
 - A llama.cpp RPC adapter. It was tested across macOS (Metal), Windows (CPU) and Linux (CPU) in seven
   measurement rounds ([results](experiments/llamacpp-feasibility/results/phase1-findings.md)).
 
-Not built yet: idle detection, GPU profiling, the network graph and clustering, the availability
-predictor, telemetry and Grafana, Ollama endpoints, SSO, the web chat UI, and gRPC. See the plan.
+Not built yet: idle detection on macOS and Linux, GPU profiling, the network graph and clustering, the
+availability predictor, Grafana, Ollama endpoints, SSO, the web chat UI, and gRPC. See the plan.
 
 > **llama.cpp RPC is research-grade.** It has no authentication or encryption. Workers must stay on
 > loopback behind the agent's mTLS tunnel (`--tunnel-listen`), and the agent refuses to expose a

@@ -16,17 +16,19 @@ message TelemetryBatch {
   string site_id = 3;
   string node_id = 4;
   repeated IdleSample idle = 5;
+  repeated NodeStateChange states = 10;
   repeated NodeHealthSample health = 6;
   repeated LogEvent logs = 7;      // warn and above by default; more during a debug window
   repeated ErrorEvent errors = 8;
   uint64 dropped_since_last = 9;   // records the buffer had to drop (bounded size, oldest first)
 }
 
-// Every 30-60 s while the agent runs (sprint 2; D-12 fields from sprint 4.9).
+// Every 30-60 s while the agent runs (sprint 2; D-12 fields from sprint 4.9). Implemented in sprint 2 as
+// JSON records {"kind": "idle", ...} in POST /api/v1/devices/{id}/telemetry; gpu_util comes with S3.3.
 message IdleSample {
   google.protobuf.Timestamp ts = 1;
-  uint32 seconds_since_input = 2;
-  bool session_active = 3;
+  optional uint32 seconds_since_input = 2;  // absent when the OS cannot tell (macOS and Linux until S3)
+  optional bool session_locked = 3;         // replaces session_active: says what is measured
   float cpu_util = 4;
   float gpu_util = 5;
   float mem_free_gb = 6;
@@ -34,6 +36,15 @@ message IdleSample {
   string state = 8;                // idle, active, sleeping, draining, serving, yielding
   float contribution_level = 9;    // 0.0-1.0
   string level_reason = 10;
+  optional float battery_pct = 11;
+}
+
+// A change of node state (sprint 2): JSON {"kind": "state", "ts", "from", "to"}. After a sleep the agent
+// sends a change to "sleeping" at the start of the gap and another on waking.
+message NodeStateChange {
+  google.protobuf.Timestamp ts = 1;
+  optional string from = 2;
+  string to = 3;
 }
 
 message NodeHealthSample {

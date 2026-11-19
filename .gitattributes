@@ -1,0 +1,8 @@
+# Store and check out text files with LF on every OS, so generated files and diffs match in CI
+# (Windows machines with core.autocrlf=true would otherwise get CRLF).
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gguf binary
+*.sqlite3 binary

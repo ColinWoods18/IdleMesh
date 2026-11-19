@@ -1,0 +1,74 @@
+# CI (S1.5): coordinator and agent tests, lint and generated-file checks on Windows, macOS and Ubuntu.
+# Required to pass before merging to main.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash  # also on Windows (Git Bash), so a failing command fails the step on every OS
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      # The integration tests find the agent build through CARGO_TARGET_DIR.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/agent/target
+      CARGO_TERM_COLOR: always
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+
+      - name: Install the coordinator
+        run: python -m pip install -e ".[dev]"
+
+      - name: Agent - build
+        working-directory: agent
+        run: cargo build --locked
+
+      - name: Agent - tests
+        working-directory: agent
+        run: cargo test --locked
+
+      - name: Agent - clippy
+        working-directory: agent
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Coordinator - tests (including those that drive the agent build)
+        run: python -m pytest -q -rs
+
+      - name: Generated files are up to date
+        run: |
+          python scripts/gen_error_codes.py --check
+          python scripts/export_openapi.py
+          git diff --exit-code -- contracts/ docs/error-codes.md

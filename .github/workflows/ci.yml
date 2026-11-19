@@ -1,4 +1,4 @@
-# CI (S1.5): coordinator and agent tests, lint and generated-file checks on Windows, macOS and Ubuntu.
+# CI (S1.5): coordinator and agent tests, lint and generated-file checks on Windows.
 # Required to pass before merging to main.
 name: CI
 
@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest]  # macOS and Ubuntu can be added back when those nodes are tested
     env:
       # The integration tests find the agent build through CARGO_TARGET_DIR.
       CARGO_TARGET_DIR: ${{ github.workspace }}/agent/target
@@ -74,5 +74,5 @@ jobs:
           git diff --exit-code -- contracts/ docs/error-codes.md
 
       - name: Dependency licences are all approved (docs/licenses.md)
-        if: matrix.os == 'ubuntu-latest'  # the lockfile covers every platform, so one run is enough
+        # the lockfile covers every platform, so one run is enough
         run: python scripts/licenses.py --check

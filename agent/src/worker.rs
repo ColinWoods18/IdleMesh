@@ -80,6 +80,8 @@ pub struct Worker {
     pub rss: u64,
     pub peak_rss: u64,
     pub cap_kills: u32,
+    /// Times the worker exited on its own (crashed); each is followed by a restart when contribution allows.
+    pub restarts: u32,
     pub last_stop: Option<String>,
     /// After a cap kill, stay stopped until the owner raises the cap above what the worker needed.
     blocked_below: Option<u64>,
@@ -91,7 +93,7 @@ pub struct Worker {
 
 impl Worker {
     pub fn new(cfg: WorkerConfig) -> Self {
-        Worker { cfg, child: None, sys: System::new(), rss: 0, peak_rss: 0, cap_kills: 0, last_stop: None,
+        Worker { cfg, child: None, sys: System::new(), rss: 0, peak_rss: 0, cap_kills: 0, restarts: 0, last_stop: None,
                  blocked_below: None, tail: Arc::new(Mutex::new(VecDeque::new())), stopping: false }
     }
 
@@ -102,6 +104,7 @@ impl Worker {
                 let status = match result { Ok(Some(s)) => s.to_string(), Ok(None) => "unknown".into(), Err(e) => e.to_string() };
                 self.child = None;
                 if !self.stopping {
+                    self.restarts += 1;
                     // Give the output threads a moment to collect the last lines before reporting.
                     std::thread::sleep(std::time::Duration::from_millis(100));
                     let tail: Vec<String> = self.tail.lock().map(|t| t.iter().cloned().collect()).unwrap_or_default();

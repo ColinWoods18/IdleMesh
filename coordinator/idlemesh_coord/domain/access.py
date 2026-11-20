@@ -21,6 +21,7 @@ class Visibility(str, Enum):
 class Scope(str, Enum):
     INFERENCE = "inference"
     SHARE = "share"
+    METRICS = "metrics"  # read-only dashboard access (S3.6)
 
 
 @dataclass(frozen=True)

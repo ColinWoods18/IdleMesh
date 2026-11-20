@@ -1,0 +1,20 @@
+# The coordinator's metrics API (S3.6), read with an administrator's metrics key. The key only works on
+# /api/v1/metrics/, and the coordinator's self-signed certificate is the only one trusted.
+apiVersion: 1
+
+datasources:
+  - name: IdleMesh
+    uid: idlemesh
+    type: yesoreyeram-infinity-datasource
+    isDefault: true
+    editable: false
+    url: ${IDLEMESH_URL}
+    jsonData:
+      auth_method: bearerToken
+      allowedHosts:
+        - ${IDLEMESH_URL}
+      tlsAuthWithCACert: true
+      timeoutInSeconds: 30
+    secureJsonData:
+      bearerToken: ${IDLEMESH_METRICS_KEY}
+      tlsCACert: $__file{/etc/idlemesh/coordinator-control.crt}

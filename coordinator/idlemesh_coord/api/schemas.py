@@ -52,7 +52,8 @@ class RedeemIn(Strict):
 
 class CredentialIn(Strict):
     name: str = Field(min_length=1, max_length=100)
-    scopes: list[Literal["inference", "share"]] = ["inference"]
+    # "metrics" makes a read-only key for dashboards (S3.6): administrators only, and it carries no other scope.
+    scopes: list[Literal["inference", "share", "metrics"]] = ["inference"]
     expires_days: int = Field(default=30, ge=1, le=90)
 
 
@@ -81,6 +82,28 @@ class PrefetchStatus(Strict):
     error: str | None = Field(default=None, max_length=300)
 
 
+class Gpu(Strict):
+    vendor: Literal["nvidia", "apple", "amd", "intel", "other"]
+    name: str = Field(max_length=120)
+    vram_bytes: int | None = Field(default=None, ge=0)  # None for unified memory or when the OS cannot tell
+    driver: str | None = Field(default=None, max_length=60)
+
+
+Backend = Literal["cuda", "metal", "vulkan", "rocm", "cpu"]
+
+
+class Hardware(Strict):
+    """The node's hardware profile (S3.3) and the inference backends it can run (S3.4)."""
+    cpu_model: str = Field(max_length=120)
+    cpu_cores: int | None = Field(default=None, ge=1)
+    cpu_threads: int = Field(ge=1)
+    ram_bytes: int = Field(ge=0)
+    unified_memory: bool = False
+    gpus: list[Gpu] = Field(default=[], max_length=16)
+    backends: list[Backend] = Field(default=["cpu"], max_length=8)
+    idle_source: Literal["win32", "iokit", "logind", "tty", "none"] = "none"
+
+
 class Capabilities(Strict):
     os: str = Field(max_length=40)
     arch: str = Field(max_length=40)
@@ -92,6 +115,7 @@ class Capabilities(Strict):
     power: Literal["ac", "battery", "unknown"] = "unknown"
     battery_pct: float | None = Field(default=None, ge=0, le=100)
     decode_probe: DecodeProbe | None = None
+    hardware: Hardware | None = None  # absent from simulated nodes and agents older than S3.3
 
 
 class Policy(Strict):
@@ -145,6 +169,7 @@ class IdleRecord(Strict):
     seconds_since_input: int | None = Field(ge=0)
     session_locked: bool | None
     cpu_util: float = Field(ge=0, le=1)
+    gpu_util: float | None = Field(default=None, ge=0, le=1)  # S3.5; absent without an NVIDIA GPU
     mem_free_gb: float = Field(ge=0)
     on_battery: bool
     battery_pct: float | None = Field(default=None, ge=0, le=100)
@@ -159,7 +184,45 @@ class StateRecord(Strict):
     to: NodeState
 
 
-TelemetryRecord = Annotated[IdleRecord | StateRecord, Field(discriminator="kind")]
+class LidRecord(Strict):
+    """A laptop lid opened or closed (S3.1). Sent once at start and on every change."""
+    kind: Literal["lid"]
+    ts: AwareDatetime
+    closed: bool
+
+
+class HealthRecord(Strict):
+    """Node health (S3.5; PROJECT_PLAN §6 NodeHealthSample). Counters count from the agent's start and reset
+    only together with agent_uptime_s, so a reset is never silent."""
+    kind: Literal["health"]
+    ts: AwareDatetime
+    cpu_util: float = Field(ge=0, le=1)
+    gpu_util: float | None = Field(default=None, ge=0, le=1)
+    mem_used_gb: float = Field(ge=0)
+    gpu_mem_used_gb: float | None = Field(default=None, ge=0)
+    temp_c: float | None = Field(default=None, ge=-50, le=150)
+    cache_disk_free_gb: float | None = Field(default=None, ge=0)
+    agent_uptime_s: int = Field(ge=0)
+    worker_restarts: int = Field(ge=0)
+    cap_kills: int = Field(ge=0)
+    tunnel_errors: int = Field(ge=0)
+    telemetry_buffer_bytes: int = Field(ge=0)
+    telemetry_dropped: int = Field(ge=0)
+
+
+ErrorCode = Annotated[str, Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")]
+
+
+class ErrorsRecord(Strict):
+    """How many warnings and errors the agent logged per error code since its last record (S3.5). Codes only:
+    the messages stay in the node's log file (and a diagnostic bundle, S4.4)."""
+    kind: Literal["errors"]
+    ts: AwareDatetime
+    counts: dict[ErrorCode, Annotated[int, Field(ge=1)]] = Field(max_length=200)
+
+
+TelemetryRecord = Annotated[IdleRecord | StateRecord | LidRecord | HealthRecord | ErrorsRecord,
+                            Field(discriminator="kind")]
 
 
 class TelemetryBatchIn(Strict):

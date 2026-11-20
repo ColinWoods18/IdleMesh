@@ -9,3 +9,4 @@ idlemesh-agent-state.json
 agent/target/
 logs/
 config/logs/
+deploy/grafana/.env

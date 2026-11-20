@@ -7,6 +7,7 @@ after which `login` signs in again.
   python scripts/pilot.py setup                 create the group (once per fresh database) and sign in
   python scripts/pilot.py login                 sign in again to the saved group
   python scripts/pilot.py code                  one-time enrollment code for a device (valid 10 minutes)
+  python scripts/pilot.py metrics-key           read-only key for Grafana (deploy/grafana/README.md)
   python scripts/pilot.py devices               devices, their state, and whether their worker runs
   python scripts/pilot.py policy "Ubuntu VM" --pause      owner controls: --pause, --resume, --cap-gb N,
                                                           --allow-battery (the agent's own limits still apply)
@@ -120,6 +121,14 @@ def cmd_code(a) -> None:
     if fp:
         print(f"coordinator fingerprint: {' '.join(fp[i:i + 4] for i in range(0, 64, 4))}")
         print(f"  on the device: --coordinator-fingerprint {fp[:16]}  (or the whole fingerprint)")
+
+
+def cmd_metrics_key(a) -> None:
+    """A read-only key for Grafana (S3.6): it only works on /api/v1/metrics/. Shown once."""
+    out = check(client(load()).post("/api/v1/credentials", json={"name": a.name, "scopes": ["metrics"],
+                                                                "expires_days": a.days}))
+    print(out["secret"])
+    print(f"expires {out['expires_at']}; put it in deploy/grafana/.env as IDLEMESH_METRICS_KEY")
 
 
 def cmd_devices(a) -> None:
@@ -303,6 +312,9 @@ def main() -> None:
     s.add_argument("--display-name", default="Pilot owner")
     sub.add_parser("login")
     sub.add_parser("code")
+    mk = sub.add_parser("metrics-key", help="read-only metrics key for Grafana (administrators)")
+    mk.add_argument("--name", default="grafana")
+    mk.add_argument("--days", type=int, default=90)
     sub.add_parser("devices")
     pol = sub.add_parser("policy")
     pol.add_argument("device", help="device name as shown by `devices`, or its id")
@@ -326,7 +338,8 @@ def main() -> None:
     b.add_argument("--network", default=None,
                    help='how each machine is connected, recorded with the results, e.g. "Mac=ethernet HP=wifi VM=wifi"')
     a = ap.parse_args()
-    {"setup": cmd_setup, "login": cmd_login, "code": cmd_code, "devices": cmd_devices, "deploy": cmd_deploy,
+    {"setup": cmd_setup, "login": cmd_login, "code": cmd_code, "metrics-key": cmd_metrics_key,
+     "devices": cmd_devices, "deploy": cmd_deploy,
      "status": cmd_status, "ask": cmd_ask, "bench": cmd_bench, "policy": cmd_policy}[a.cmd](a)
 
 

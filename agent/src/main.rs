@@ -5,6 +5,8 @@
 //! tunnel.rs).
 
 mod control;
+mod hardware;
+mod health;
 mod idle;
 mod logging;
 mod node_state;
@@ -274,13 +276,23 @@ struct RunOptions {
     telemetry_buffer_bytes: u64,
 }
 
-fn capabilities(p: &probe::Probe, cap: u64, rtt_ms: f64, digest: &str) -> serde_json::Value {
-    json!({
+fn capabilities(p: &probe::Probe, cap: u64, rtt_ms: f64, digest: &str, hw: Option<&hardware::Hardware>)
+                -> serde_json::Value {
+    let mut v = json!({
         "os": p.os, "arch": p.arch, "backend_digest": digest, "formats": ["gguf"],
         "allocatable_bytes": allocatable(cap, p.available_bytes),
         "mem_bandwidth_gbps": (p.mem_bandwidth_gbps * 10.0).round() / 10.0,
         "rtt_ms": rtt_ms, "power": p.power.label(), "battery_pct": p.power.pct(),
-    })
+    });
+    if let Some(h) = hw {
+        v["hardware"] = json!(h);
+    }
+    v
+}
+
+/// The hardware profile of this machine, or none for a simulated stand-in (it would describe the wrong machine).
+fn hardware_for(simulate: &Option<String>) -> Option<hardware::Hardware> {
+    simulate.is_none().then(hardware::profile)
 }
 
 fn save_state(path: &Path, state: &State) -> std::io::Result<()> {
@@ -306,9 +318,11 @@ fn enroll(coordinator: String, fingerprint: Option<String>, code: String, name: 
         warm_hold_minutes: 30,
     };
     let identity = tunnel::generate_identity(&name)?;
+    let hw = hardware_for(&simulate);
     let body = json!({
         "code": code, "name": name, "public_key": identity.cert_pem,
-        "capabilities": capabilities(&p, owner_policy.memory_cap_bytes, p.simulated_rtt_ms, &backend_digest),
+        "capabilities": capabilities(&p, owner_policy.memory_cap_bytes, p.simulated_rtt_ms, &backend_digest,
+                                     hw.as_ref()),
         "policy": owner_policy, "consent": consent,
     });
     let url = format!("{}/api/v1/devices/enroll", coordinator.trim_end_matches('/'));
@@ -424,15 +438,35 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
     let _ = ctrlc::set_handler(move || flag.store(true, std::sync::atomic::Ordering::SeqCst));
     let mut paused = true;
     let mut next_beat = Instant::now();
-    // Idle monitoring and telemetry (S2.1 to S2.6).
+    // Hardware profile (S3.3, S3.4), once: it does not change while the agent runs.
+    let hw = hardware_for(&st.simulate);
+    if let Some(h) = &hw {
+        info!(cpu = %h.cpu_model, ram_gb = h.ram_bytes / 1_000_000_000, gpus = h.gpus.len(),
+              backends = %h.backends.join(","), idle_source = h.idle_source,
+              "hardware: {} ({} threads), {:.0} GB RAM{}, GPUs: {}; backends: {}", h.cpu_model, h.cpu_threads,
+              h.ram_bytes as f64 / 1e9, if h.unified_memory { " unified" } else { "" },
+              if h.gpus.is_empty() { "none".into() } else {
+                  h.gpus.iter().map(|g| g.name.clone()).collect::<Vec<_>>().join(", ") },
+              h.backends.join(", "));
+    }
+    let mut health = health::Sampler::new(hw.as_ref().is_some_and(|h| h.backends.contains(&"cuda")));
+    // Idle monitoring and telemetry (S2.1 to S2.6): idle data needs the owner's idle-data consent; health
+    // samples and error counts (S3.5) need diagnostics consent. The buffer exists if either was given.
     let telemetry_dir = state_dir(&state_path).join("telemetry");
-    let mut buffer = if st.consent.idle_data {
+    if !st.consent.idle_data {
+        info!("idle data is not collected: the owner has not consented (idlemesh-agent consent --idle-data true)");
+    }
+    if !st.consent.diagnostics {
+        info!("health and error counts are not sent: the owner has not consented to diagnostics \
+               (idlemesh-agent consent --diagnostics true)");
+    }
+    let mut buffer = if st.consent.idle_data || st.consent.diagnostics {
         Some(telemetry::Buffer::open(&telemetry_dir, opts.telemetry_buffer_bytes)
             .map_err(|e| format!("cannot open the telemetry buffer {}: {e}", telemetry_dir.display()))?)
     } else {
-        info!("idle data is not collected: the owner has not consented (idlemesh-agent consent --idle-data true)");
         None
     };
+    let mut lid: Option<bool> = None;
     let telemetry_url = format!("{}/api/v1/devices/{}/telemetry", st.coordinator.trim_end_matches('/'), st.device_id);
     let mut interval_s = opts.telemetry_interval_s.unwrap_or(DEFAULT_TELEMETRY_INTERVAL_S);
     let mut idle_after_s = opts.idle_after_s.unwrap_or(DEFAULT_IDLE_AFTER_S);
@@ -463,25 +497,54 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
             let current = node_state::classify(&node_state::Inputs {
                 seconds_since_input: reading.seconds_since_input, session_locked: reading.session_locked,
                 idle_after_s, assigned: assignment.is_some(), paused });
-            for ch in tracker.observe(now, current) {
-                let from = ch.from.map_or("none", |s| s.as_str());
-                info!(from, to = ch.to.as_str(), "node state: {from} -> {}", ch.to.as_str());
-                if let Some(b) = buffer.as_mut() {
+            let idle_buf = buffer.as_mut().filter(|_| st.consent.idle_data);
+            if let Some(b) = idle_buf {
+                for ch in tracker.observe(now, current) {
+                    let from = ch.from.map_or("none", |s| s.as_str());
+                    info!(from, to = ch.to.as_str(), "node state: {from} -> {}", ch.to.as_str());
                     record(b, json!({"kind": "state", "ts": logging::rfc3339(ch.at), "from": ch.from, "to": ch.to}));
                     upload_due = true;
                 }
+                if reading.lid_closed.is_some() && reading.lid_closed != lid {
+                    if lid.is_some() {
+                        info!(lid_closed = reading.lid_closed, "lid {}",
+                              if reading.lid_closed == Some(true) { "closed" } else { "opened" });
+                    }
+                    record(b, json!({"kind": "lid", "ts": logging::rfc3339(now), "closed": reading.lid_closed}));
+                    lid = reading.lid_closed;
+                    upload_due = true;
+                }
+            } else {
+                tracker.observe(now, current); // the node state is still reported in heartbeats
             }
             if Instant::now() >= next_sample {
                 next_sample = Instant::now() + Duration::from_secs(interval_s);
                 if let Some(b) = buffer.as_mut() {
-                    let p = take_probe_cached(&st.simulate, bandwidth)?;
-                    record(b, json!({
-                        "kind": "idle", "ts": logging::rfc3339(now),
-                        "seconds_since_input": reading.seconds_since_input, "session_locked": reading.session_locked,
-                        "cpu_util": cpu.sample(), "mem_free_gb": (p.available_bytes as f64 / GB * 100.0).round() / 100.0,
-                        "on_battery": matches!(p.power, policy::Power::Battery(_)), "battery_pct": p.power.pct(),
-                        "state": current,
-                    }));
+                    let ts = logging::rfc3339(now);
+                    let gpu = health.gpu();
+                    if st.consent.idle_data {
+                        let p = take_probe_cached(&st.simulate, bandwidth)?;
+                        record(b, json!({
+                            "kind": "idle", "ts": ts,
+                            "seconds_since_input": reading.seconds_since_input, "session_locked": reading.session_locked,
+                            "cpu_util": cpu.sample(), "gpu_util": gpu.as_ref().map(|g| (g.util * 1000.0).round() / 1000.0),
+                            "mem_free_gb": (p.available_bytes as f64 / GB * 100.0).round() / 100.0,
+                            "on_battery": matches!(p.power, policy::Power::Battery(_)), "battery_pct": p.power.pct(),
+                            "state": current,
+                        }));
+                    }
+                    if st.consent.diagnostics {
+                        let counters = health::Counters {
+                            worker_restarts: worker.as_ref().map_or(0, |w| w.restarts),
+                            cap_kills: worker.as_ref().map_or(0, |w| w.cap_kills),
+                            tunnel_errors: logging::error_total("TUNNEL_"),
+                            telemetry_buffer_bytes: b.bytes(), telemetry_dropped: b.dropped() };
+                        record(b, health.sample(&ts, &opts.cache_dir, gpu.as_ref(), counters));
+                        let errors = logging::take_error_counts();
+                        if !errors.is_empty() {
+                            record(b, json!({"kind": "errors", "ts": ts, "counts": errors}));
+                        }
+                    }
                     upload_due = true;
                 }
             }
@@ -490,7 +553,7 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
             let p = take_probe_cached(&st.simulate, bandwidth)?;
             paused = effective_paused(&effective, p.power, &mut battery_hold);
             let rtt = if st.simulate.is_some() { p.simulated_rtt_ms } else { last_rtt };
-            let mut caps = capabilities(&p, effective.memory_cap_bytes, rtt, &st.backend_digest);
+            let mut caps = capabilities(&p, effective.memory_cap_bytes, rtt, &st.backend_digest, hw.as_ref());
             if let Some(d) = &decode {
                 caps["decode_probe"] = d.clone();
             }
@@ -627,8 +690,8 @@ fn idle_cmd(watch: bool, idle_after_s: u64) -> Result<(), String> {
             seconds_since_input: r.seconds_since_input, session_locked: r.session_locked, idle_after_s,
             assigned: false, paused: false });
         println!("{}", json!({"seconds_since_input": r.seconds_since_input, "session_locked": r.session_locked,
-                               "cpu_util": cpu.sample(), "power": probe::real_with(0.0).power.label(),
-                               "state": state}));
+                               "lid_closed": r.lid_closed, "source": r.source, "cpu_util": cpu.sample(),
+                               "power": probe::real_with(0.0).power.label(), "state": state}));
         if !watch {
             return Ok(());
         }
@@ -691,7 +754,8 @@ fn main() {
             Ok(())
         })(),
         Cmd::Probe { simulate } => take_probe(&simulate).map(|p| {
-            let caps = capabilities(&p, u64::MAX, p.simulated_rtt_ms, DEFAULT_BACKEND_DIGEST);
+            let caps = capabilities(&p, u64::MAX, p.simulated_rtt_ms, DEFAULT_BACKEND_DIGEST,
+                                    hardware_for(&simulate).as_ref());
             println!("{}", serde_json::to_string_pretty(&caps).unwrap());
         }),
     };

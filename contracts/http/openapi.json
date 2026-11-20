@@ -50,6 +50,16 @@
             "title": "Formats",
             "type": "array"
           },
+          "hardware": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Hardware"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mem_bandwidth_gbps": {
             "exclusiveMinimum": 0.0,
             "title": "Mem Bandwidth Gbps",
@@ -226,7 +236,8 @@
             "items": {
               "enum": [
                 "inference",
-                "share"
+                "share",
+                "metrics"
               ],
               "type": "string"
             },
@@ -351,6 +362,40 @@
         "title": "EnrollIn",
         "type": "object"
       },
+      "ErrorsRecord": {
+        "additionalProperties": false,
+        "description": "How many warnings and errors the agent logged per error code since its last record (S3.5). Codes only:\nthe messages stay in the node's log file (and a diagnostic bundle, S4.4).",
+        "properties": {
+          "counts": {
+            "maxProperties": 200,
+            "patternProperties": {
+              "^[A-Z][A-Z0-9_]{1,63}$": {
+                "minimum": 1.0,
+                "type": "integer"
+              }
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "kind": {
+            "const": "errors",
+            "title": "Kind",
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "ts",
+          "counts"
+        ],
+        "title": "ErrorsRecord",
+        "type": "object"
+      },
       "ForkIn": {
         "additionalProperties": false,
         "properties": {
@@ -394,6 +439,57 @@
         "title": "ForkIn",
         "type": "object"
       },
+      "Gpu": {
+        "additionalProperties": false,
+        "properties": {
+          "driver": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Driver"
+          },
+          "name": {
+            "maxLength": 120,
+            "title": "Name",
+            "type": "string"
+          },
+          "vendor": {
+            "enum": [
+              "nvidia",
+              "apple",
+              "amd",
+              "intel",
+              "other"
+            ],
+            "title": "Vendor",
+            "type": "string"
+          },
+          "vram_bytes": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vram Bytes"
+          }
+        },
+        "required": [
+          "vendor",
+          "name"
+        ],
+        "title": "Gpu",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -405,6 +501,211 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Hardware": {
+        "additionalProperties": false,
+        "description": "The node's hardware profile (S3.3) and the inference backends it can run (S3.4).",
+        "properties": {
+          "backends": {
+            "default": [
+              "cpu"
+            ],
+            "items": {
+              "enum": [
+                "cuda",
+                "metal",
+                "vulkan",
+                "rocm",
+                "cpu"
+              ],
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Backends",
+            "type": "array"
+          },
+          "cpu_cores": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Cores"
+          },
+          "cpu_model": {
+            "maxLength": 120,
+            "title": "Cpu Model",
+            "type": "string"
+          },
+          "cpu_threads": {
+            "minimum": 1.0,
+            "title": "Cpu Threads",
+            "type": "integer"
+          },
+          "gpus": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Gpu"
+            },
+            "maxItems": 16,
+            "title": "Gpus",
+            "type": "array"
+          },
+          "idle_source": {
+            "default": "none",
+            "enum": [
+              "win32",
+              "iokit",
+              "logind",
+              "tty",
+              "none"
+            ],
+            "title": "Idle Source",
+            "type": "string"
+          },
+          "ram_bytes": {
+            "minimum": 0.0,
+            "title": "Ram Bytes",
+            "type": "integer"
+          },
+          "unified_memory": {
+            "default": false,
+            "title": "Unified Memory",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cpu_model",
+          "cpu_threads",
+          "ram_bytes"
+        ],
+        "title": "Hardware",
+        "type": "object"
+      },
+      "HealthRecord": {
+        "additionalProperties": false,
+        "description": "Node health (S3.5; PROJECT_PLAN \u00a76 NodeHealthSample). Counters count from the agent's start and reset\nonly together with agent_uptime_s, so a reset is never silent.",
+        "properties": {
+          "agent_uptime_s": {
+            "minimum": 0.0,
+            "title": "Agent Uptime S",
+            "type": "integer"
+          },
+          "cache_disk_free_gb": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cache Disk Free Gb"
+          },
+          "cap_kills": {
+            "minimum": 0.0,
+            "title": "Cap Kills",
+            "type": "integer"
+          },
+          "cpu_util": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Cpu Util",
+            "type": "number"
+          },
+          "gpu_mem_used_gb": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Mem Used Gb"
+          },
+          "gpu_util": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Util"
+          },
+          "kind": {
+            "const": "health",
+            "title": "Kind",
+            "type": "string"
+          },
+          "mem_used_gb": {
+            "minimum": 0.0,
+            "title": "Mem Used Gb",
+            "type": "number"
+          },
+          "telemetry_buffer_bytes": {
+            "minimum": 0.0,
+            "title": "Telemetry Buffer Bytes",
+            "type": "integer"
+          },
+          "telemetry_dropped": {
+            "minimum": 0.0,
+            "title": "Telemetry Dropped",
+            "type": "integer"
+          },
+          "temp_c": {
+            "anyOf": [
+              {
+                "maximum": 150.0,
+                "minimum": -50.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temp C"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "tunnel_errors": {
+            "minimum": 0.0,
+            "title": "Tunnel Errors",
+            "type": "integer"
+          },
+          "worker_restarts": {
+            "minimum": 0.0,
+            "title": "Worker Restarts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "ts",
+          "cpu_util",
+          "mem_used_gb",
+          "agent_uptime_s",
+          "worker_restarts",
+          "cap_kills",
+          "tunnel_errors",
+          "telemetry_buffer_bytes",
+          "telemetry_dropped"
+        ],
+        "title": "HealthRecord",
         "type": "object"
       },
       "HeartbeatIn": {
@@ -506,6 +807,19 @@
             "title": "Cpu Util",
             "type": "number"
           },
+          "gpu_util": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpu Util"
+          },
           "kind": {
             "const": "idle",
             "title": "Kind",
@@ -594,6 +908,33 @@
           }
         },
         "title": "InviteIn",
+        "type": "object"
+      },
+      "LidRecord": {
+        "additionalProperties": false,
+        "description": "A laptop lid opened or closed (S3.1). Sent once at start and on every change.",
+        "properties": {
+          "closed": {
+            "title": "Closed",
+            "type": "boolean"
+          },
+          "kind": {
+            "const": "lid",
+            "title": "Kind",
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "ts",
+          "closed"
+        ],
+        "title": "LidRecord",
         "type": "object"
       },
       "LoginIn": {
@@ -1057,7 +1398,10 @@
             "items": {
               "discriminator": {
                 "mapping": {
+                  "errors": "#/components/schemas/ErrorsRecord",
+                  "health": "#/components/schemas/HealthRecord",
                   "idle": "#/components/schemas/IdleRecord",
+                  "lid": "#/components/schemas/LidRecord",
                   "state": "#/components/schemas/StateRecord"
                 },
                 "propertyName": "kind"
@@ -1068,6 +1412,15 @@
                 },
                 {
                   "$ref": "#/components/schemas/StateRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/LidRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/HealthRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/ErrorsRecord"
                 }
               ]
             },
@@ -1816,7 +2169,7 @@
     },
     "/api/v1/devices/{device_id}/telemetry": {
       "post": {
-        "description": "Idle samples and state changes from an agent's on-disk buffer (S2.3, S2.4). Repeats are ignored.",
+        "description": "Idle samples, state changes, health and error counts from an agent's on-disk buffer (S2.3, S2.4,\nS3.5). Repeats are ignored. Each record kind needs its own consent: idle data or diagnostics.",
         "operationId": "upload_telemetry_api_v1_devices__device_id__telemetry_post",
         "parameters": [
           {
@@ -2390,6 +2743,348 @@
         "summary": "Redeem",
         "tags": [
           "groups"
+        ]
+      }
+    },
+    "/api/v1/metrics/errors": {
+      "get": {
+        "description": "Error events per code per time bucket, by source (a node's name, or coordinator).",
+        "operationId": "metrics_errors_api_v1_metrics_errors_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "title": "Hours",
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bucket_min",
+            "required": false,
+            "schema": {
+              "default": 5,
+              "title": "Bucket Min",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Errors",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/metrics/health": {
+      "get": {
+        "description": "Node health samples (S3.5), oldest first, one row per node per sample.",
+        "operationId": "metrics_health_api_v1_metrics_health_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "title": "Hours",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Health",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/metrics/idle-heatmap": {
+      "get": {
+        "description": "Share of time idle by day of week and hour, across the group's nodes or one node (by name).",
+        "operationId": "metrics_idle_heatmap_api_v1_metrics_idle_heatmap_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 672,
+              "title": "Hours",
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "node",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Node"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Idle Heatmap",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/metrics/nodes": {
+      "get": {
+        "description": "Every node in the group with its hardware profile, backends and current state (S3.3, S3.4).",
+        "operationId": "metrics_nodes_api_v1_metrics_nodes_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Metrics Nodes",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/metrics/states": {
+      "get": {
+        "description": "Idle samples with each node's state, oldest first, for a state timeline.",
+        "operationId": "metrics_states_api_v1_metrics_states_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "title": "Hours",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics States",
+        "tags": [
+          "metrics"
         ]
       }
     },

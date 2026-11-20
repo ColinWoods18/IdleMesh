@@ -11,7 +11,8 @@ SOURCE = ROOT / "coordinator" / "idlemesh_coord"
 
 # Upper-case string literals that are not error codes.
 NOT_CODES = {"POST", "PATCH", "DELETE", "PUT", "GET", "UNSAFE", "GGUF", "COMMIT", "ROLLBACK", "TERMINAL",
-             "MTL0"}  # llama.cpp device name
+             "MTL0",  # llama.cpp device name
+             "TEXT", "REAL", "NULL", "INTEGER"}  # SQL column types and placeholders
 LITERAL = re.compile(r"""["']([A-Z][A-Z0-9_]{2,})["']""")
 
 

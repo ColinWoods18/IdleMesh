@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from conftest import GB, enroll
 
 from idlemesh_coord import telemetry
-from idlemesh_coord.store import Store
+from idlemesh_coord.store import SCHEMA_VERSION, Store
 
 CAPS = {"os": "windows", "arch": "x86_64", "backend_digest": "fake-runtime-0.1", "formats": ["gguf"],
         "allocatable_bytes": 4 * GB, "mem_bandwidth_gbps": 50, "rtt_ms": 2, "power": "ac"}
@@ -149,6 +149,26 @@ def test_a_version_1_database_is_migrated(tmp_path):
     db.close()
     store = Store(str(path))
     assert "consent" in {r[1] for r in store.all("PRAGMA table_info(devices)")}
-    assert store.one("SELECT version FROM schema_version")[0] == 2
+    assert store.one("SELECT version FROM schema_version")[0] == SCHEMA_VERSION
     assert store.all("SELECT * FROM idle_samples") == []
     Store(str(path))  # opening again is a no-op
+
+
+def test_a_version_2_database_gains_gpu_use_and_health_tables(tmp_path):
+    path = tmp_path / "v2.sqlite3"
+    db = sqlite3.connect(path)
+    db.executescript("""
+        CREATE TABLE schema_version (version INTEGER NOT NULL); INSERT INTO schema_version VALUES (2);
+        CREATE TABLE idle_samples (node TEXT NOT NULL, ts TEXT NOT NULL, org_id TEXT, site_id TEXT,
+          seconds_since_input INTEGER, session_locked INTEGER, cpu_util REAL NOT NULL, mem_free_gb REAL NOT NULL,
+          on_battery INTEGER NOT NULL, battery_pct REAL, state TEXT NOT NULL, received_at TEXT NOT NULL,
+          PRIMARY KEY (node, ts));
+        INSERT INTO idle_samples VALUES ('n_1', '2026-11-19T00:00:00.000+00:00', NULL, NULL, 5, 0, 0.1, 4, 0, NULL,
+          'active', '2026-11-19T00:00:01+00:00');
+    """)
+    db.close()
+    store = Store(str(path))
+    assert store.one("SELECT version FROM schema_version")[0] == SCHEMA_VERSION
+    row = store.one("SELECT * FROM idle_samples")
+    assert row["state"] == "active" and row["gpu_util"] is None  # old rows kept, new column empty
+    assert store.all("SELECT * FROM node_health") == [] and store.all("SELECT * FROM error_events") == []

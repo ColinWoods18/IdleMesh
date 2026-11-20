@@ -66,6 +66,21 @@ async def current(request: Request) -> Principal:
     return _member_principal(store, s["member_id"], "session", frozenset({Scope.INFERENCE, Scope.SHARE}))
 
 
+def device_by_token(request: Request, device_id: str):
+    """The device row for an agent's bearer token; tags the request's logs with the node ID."""
+    from .. import obs  # local: obs is imported lazily here to keep auth free of logging setup
+
+    token = bearer(request)
+    d = request.app.state.store.one("SELECT * FROM devices WHERE id = ?", (device_id,))
+    if not token or not d or not matches(token, d["token_verifier"]):
+        raise ApiError(401, "UNAUTHENTICATED", "Invalid device credential.")
+    request.state.node_id = device_id
+    obs.node_id.set(device_id)
+    if d["status"] != "active":
+        raise ApiError(403, "DEVICE_REVOKED", "This device is no longer authorized.")
+    return d
+
+
 def require_admin(p: Principal) -> None:
     if not p.is_admin:
         raise ApiError(403, "FORBIDDEN", "Only group administrators can do this.")

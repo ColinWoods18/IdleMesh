@@ -70,10 +70,11 @@ def ingest(store: Store, node: str, batch, org_id: str | None, site_id: str | No
             if r.kind == "idle":
                 cur = c.execute(
                     "INSERT OR IGNORE INTO idle_samples (node, ts, org_id, site_id, seconds_since_input, session_locked,"
-                    " cpu_util, gpu_util, mem_free_gb, on_battery, battery_pct, state, received_at)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " cpu_util, gpu_util, mem_free_gb, on_battery, battery_pct, state, received_at, contribution_level,"
+                    " level_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (node, ts, org_id, site_id, r.seconds_since_input, _bool(r.session_locked), r.cpu_util,
-                     r.gpu_util, r.mem_free_gb, int(r.on_battery), r.battery_pct, r.state, received))
+                     r.gpu_util, r.mem_free_gb, int(r.on_battery), r.battery_pct, r.state, received,
+                     r.contribution_level, r.level_reason))
             elif r.kind == "state":
                 cur = c.execute(
                     "INSERT OR IGNORE INTO node_events (node, ts, kind, from_state, to_state, org_id, site_id,"
@@ -128,7 +129,8 @@ def timeline(store: Store, node: str, since) -> dict:
     """Samples, state changes and drops for one node since a time, oldest first."""
     t = iso(since)
     samples = [dict(r) for r in store.all(
-        "SELECT ts, seconds_since_input, session_locked, cpu_util, gpu_util, mem_free_gb, on_battery, battery_pct, state"
+        "SELECT ts, seconds_since_input, session_locked, cpu_util, gpu_util, mem_free_gb, on_battery, battery_pct, state,"
+        " contribution_level, level_reason"
         " FROM idle_samples WHERE node = ? AND ts >= ? ORDER BY ts", (node, t))]
     for s in samples:
         s["session_locked"] = None if s["session_locked"] is None else bool(s["session_locked"])

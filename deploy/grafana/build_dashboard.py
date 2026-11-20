@@ -142,6 +142,27 @@ def build() -> dict:
                 "Code": {"aggregations": [], "operation": "groupby"}, "Source": {"aggregations": [], "operation": "groupby"},
                 "Count": {"aggregations": ["sum"], "operation": "aggregate"}}}},
                 {"id": "sortBy", "options": {"sort": [{"field": "Count (sum)", "desc": True}]}}]),
+
+        panel("timeseries", "Contribution level", (0, 41, 12, 8), [query(
+            "/api/v1/metrics/states", [("ts", "Time", "timestamp"), ("node", "node", "string"),
+                                       ("contribution_level", "Level", "number")])],
+            description="The contribution governor's level per node (S4.9, D-12): it ramps up with idle time, is "
+                        "capped by time windows and owner settings, and drops to the yield level within about a "
+                        "second of user input.",
+            transformations=[by_node()],
+            defaults={"unit": "percentunit", "min": 0, "max": 1, "displayName": "${__field.labels.node}",
+                      "custom": {"lineWidth": 2, "fillOpacity": 10, "lineInterpolation": "stepAfter",
+                                 "showPoints": "never"}},
+            options={"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}),
+
+        panel("table", "Crash reports", (12, 41, 12, 8), [query(
+            "/api/v1/metrics/crashes", [("ts", "Time", "timestamp"), ("node", "Node", "string"),
+                                        ("kind", "Kind", "string"), ("summary", "Summary", "string"),
+                                        ("version", "Version", "string"), ("build_hash", "Build", "string"),
+                                        ("crash_id", "Crash ID", "string")])],
+            description="Agent panics and worker crashes (S4.3), newest first. The full report (backtrace, last "
+                        "worker output, redacted config) is at /api/v1/groups/{group}/devices/{device}/crash-reports/"
+                        "{crash_id}."),
     ]
     return {
         "uid": "idlemesh-overview", "title": "IdleMesh overview", "tags": ["idlemesh"], "timezone": "browser",

@@ -28,8 +28,8 @@ from ..security import Passwords, fingerprint, matches, new_id, new_secret, veri
 from ..store import Store, iso, now, parse
 from ..tokens import context_tokens
 from ..transport import CoordinatorIdentity, TunnelError, TunnelManager, cert_fingerprint, is_certificate
-from . import compat, errors, metrics
-from .auth import SESSION_COOKIE, bearer, current, require_admin, require_group, require_session
+from . import compat, diagnostics, errors, metrics
+from .auth import SESSION_COOKIE, bearer, current, device_by_token, require_admin, require_group, require_session
 from .errors import ApiError, not_found
 from .schemas import (CodeIn, ConversationIn, CreateGroupIn, CredentialIn, DeploymentIn, EnrollIn, ForkIn,
                       HeartbeatIn, InviteIn, LoginIn, PolicyPatch, RecoverIn, RedeemIn, RequestIn, TelemetryBatchIn)
@@ -114,6 +114,7 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
     register(app)
     compat.register(app)
     metrics.register(app)
+    diagnostics.register(app)
     return app
 
 
@@ -167,6 +168,7 @@ async def _liveness_monitor(app) -> None:
             next_prune = time.monotonic() + 3600
             try:
                 await run_in_threadpool(telemetry.prune, store, settings.telemetry_retention_days)
+                await run_in_threadpool(diagnostics.prune, store, settings.telemetry_retention_days)
             except Exception:  # noqa: BLE001 - retention must never stop the liveness monitor
                 log.exception("telemetry retention failed", extra={"error_code": "INTERNAL"})
         for gid in list(app.state.prefetch):
@@ -599,16 +601,7 @@ def register(app: FastAPI) -> None:
                 "coordinator_cert_pem": request.app.state.tunnels.identity.cert_pem,
                 "device_cert_sha256": cert_fingerprint(body.public_key) if has_cert else None}
 
-    def _device_by_token(request: Request, device_id: str):
-        token = bearer(request)
-        d = S(request).one("SELECT * FROM devices WHERE id = ?", (device_id,))
-        if not token or not d or not matches(token, d["token_verifier"]):
-            raise ApiError(401, "UNAUTHENTICATED", "Invalid device credential.")
-        request.state.node_id = device_id
-        obs.node_id.set(device_id)
-        if d["status"] != "active":
-            raise ApiError(403, "DEVICE_REVOKED", "This device is no longer authorized.")
-        return d
+    _device_by_token = device_by_token
 
     @app.post("/api/v1/devices/{device_id}/heartbeat", tags=["devices"])
     async def heartbeat(device_id: str, body: HeartbeatIn, request: Request):
@@ -625,6 +618,10 @@ def register(app: FastAPI) -> None:
             caps["node_state"] = body.node_state
         if body.telemetry:
             caps["telemetry"] = body.telemetry.model_dump()
+        if body.contribution:
+            caps["contribution"] = body.contribution.model_dump()
+        if body.log_level:
+            caps["log_level"] = body.log_level
         consent = body.consent.model_dump_json() if body.consent else d["consent"]
         if body.consent and consent != d["consent"]:
             obs.log(log, logging.INFO, "consent changed", idle_data=body.consent.idle_data,
@@ -642,7 +639,12 @@ def register(app: FastAPI) -> None:
                 # Lets the agent tag its own and its worker's log lines with the requests it is serving (D-11).
                 "active_request_ids": sorted(g.running) if stage else [],
                 "prefetch": {"deployment_id": pending["deployment_id"], **manifest} if manifest else None,
-                "telemetry": {"interval_s": settings.telemetry_interval_s, "idle_after_s": settings.idle_after_s}}
+                "telemetry": {"interval_s": settings.telemetry_interval_s, "idle_after_s": settings.idle_after_s},
+                # Contribution governor settings (S4.9): the agent applies them locally, under its owner's ceiling.
+                "contribution": {"idle_after_s": settings.idle_after_s, "ramp_s": settings.ramp_s,
+                                 "yield_level": settings.yield_level, "max_cpu_fraction": settings.max_cpu_fraction,
+                                 "windows": settings.contribution_windows},
+                **diagnostics.heartbeat_extras(S(request), d)}
 
     @app.post("/api/v1/devices/{device_id}/telemetry", tags=["devices"])
     async def upload_telemetry(device_id: str, body: TelemetryBatchIn, request: Request):

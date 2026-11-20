@@ -20,6 +20,13 @@ def test_example_file_loads_and_validates():
     assert site.log_file() == str(EXAMPLE.parent / "logs" / "coordinator.log")
 
 
+def test_settings_take_the_governor_section():
+    s = Settings.from_site(site_config.load(EXAMPLE))
+    assert (s.ramp_s, s.yield_level, s.max_cpu_fraction) == (1800, 0.02, 0.75)
+    assert [w["name"] for w in s.contribution_windows] == ["overnight", "daytime"]
+    assert s.contribution_windows[0]["start"] == "20:00" and s.contribution_windows[1]["max_level"] == 0.5
+
+
 def test_settings_take_queue_limits_and_site_identity():
     site = site_config.load(EXAMPLE)
     s = Settings.from_site(site, db_path="x.sqlite3")

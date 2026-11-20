@@ -60,6 +60,11 @@ class Settings:
     telemetry_retention_days: int = 90
     pseudonymize_nodes: bool = True
     idle_after_s: int = 600
+    # Contribution governor (S4.9, D-12; site config sections `idle` and `contribution`), sent to agents.
+    ramp_s: int = 1800
+    yield_level: float = 0.02
+    max_cpu_fraction: float = 0.75
+    contribution_windows: list = field(default_factory=list)  # [{"name", "days", "start", "end", "max_level"}]
 
     @classmethod
     def from_site(cls, site, **overrides) -> "Settings":
@@ -70,4 +75,7 @@ class Settings:
                       "wait_deadline_s": q.wait_deadline_s, "active_deadline_s": q.active_deadline_s,
                       "telemetry_interval_s": t.interval_s, "telemetry_retention_days": t.retention_days,
                       "pseudonymize_nodes": t.pseudonymize_nodes, "idle_after_s": site.idle.idle_after_s,
+                      "ramp_s": site.idle.ramp_s, "yield_level": site.idle.yield_level,
+                      "max_cpu_fraction": site.contribution.max_cpu_fraction,
+                      "contribution_windows": [w.model_dump() for w in site.contribution.windows],
                       **overrides})

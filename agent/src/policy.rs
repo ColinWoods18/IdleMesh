@@ -13,10 +13,17 @@ pub struct OwnerPolicy {
     pub paused: bool,
     #[serde(default = "default_warm_hold")]
     pub warm_hold_minutes: u32,
+    /// The owner's ceiling on the contribution level, 0.0 to 1.0 (S4.9).
+    #[serde(default = "default_max_level")]
+    pub max_level: f64,
 }
 
 fn default_warm_hold() -> u32 {
     30
+}
+
+fn default_max_level() -> f64 {
+    1.0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,6 +59,7 @@ pub fn merge(local: &OwnerPolicy, remote: &OwnerPolicy) -> OwnerPolicy {
         battery_resume_pct: local.battery_resume_pct.max(remote.battery_resume_pct),
         paused: local.paused || remote.paused,
         warm_hold_minutes: local.warm_hold_minutes.min(remote.warm_hold_minutes),
+        max_level: local.max_level.min(remote.max_level),
     }
 }
 
@@ -126,7 +134,19 @@ mod tests {
             battery_resume_pct: 40.0,
             paused: false,
             warm_hold_minutes: 10,
+            max_level: 1.0,
         }
+    }
+
+    #[test]
+    fn coordinator_can_lower_but_not_raise_the_contribution_ceiling() {
+        let local = OwnerPolicy { max_level: 0.6, ..policy() };
+        assert_eq!(merge(&local, &OwnerPolicy { max_level: 1.0, ..policy() }).max_level, 0.6);
+        assert_eq!(merge(&local, &OwnerPolicy { max_level: 0.2, ..policy() }).max_level, 0.2);
+        // A state file from before S4.9 has no max_level: it means no ceiling.
+        let old: OwnerPolicy = serde_json::from_str(r#"{"memory_cap_bytes":1,"allow_battery":false,
+            "battery_stop_pct":30,"battery_resume_pct":40,"paused":false}"#).unwrap();
+        assert_eq!(old.max_level, 1.0);
     }
 
     #[test]

@@ -206,7 +206,7 @@ mod platform {
             CFRelease(v);
             ok
         };
-        (ok && ns >= 0).then(|| ns as u64 / 1_000_000_000)
+        (ok && ns >= 0).then_some(ns as u64 / 1_000_000_000)
     }
 
     fn lid_closed() -> Option<bool> {

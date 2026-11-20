@@ -46,9 +46,13 @@ one code can be followed across components and counted in metrics.
 
 | Code | HTTP | Retry | Meaning |
 |---|---|---|---|
+| `AGENT_PANIC` | — | yes | Agent: the agent crashed; a crash report was saved and is uploaded on its next start. |
 | `CONFIG_INVALID` | — | no | A command-line option or configuration value is invalid. |
 | `CONTROL_UNREACHABLE` | — | yes | Agent: the coordinator could not be reached, or its certificate did not match the pinned fingerprint. |
+| `CRASH_REPORT_UPLOAD_FAILED` | — | yes | Agent: a saved crash report could not be uploaded; it stays on disk and is retried. |
 | `DEVICE_REVOKED` | 403 | no | The node is no longer authorized; the agent stops all local work. |
+| `DIAGNOSTICS_FAILED` | — | yes | Agent: a requested diagnostic bundle could not be built or uploaded. |
+| `DIAGNOSTICS_NO_CONSENT` | 409 | no | The device's owner has not consented to diagnostics, so crash reports, diagnostic bundles and remote log levels are refused. |
 | `ENROLLMENT_INVALID` | 404 | no | The enrollment code is invalid, expired or already used. |
 | `ENROLL_FAILED` | — | yes | Agent: enrollment did not complete (the coordinator refused or the reply was invalid). |
 | `HEARTBEAT_REJECTED` | — | yes | Agent: the coordinator answered a heartbeat with an unexpected error status. |
@@ -70,10 +74,12 @@ one code can be followed across components and counted in metrics.
 | `ENDPOINT_REFUSED` | — | no | A non-loopback llama.cpp worker would be used without the tunnel, so it was refused. |
 | `MEMORY_CAP_EXCEEDED` | — | no | Agent: the worker used more memory than the owner's cap and was killed. It stays stopped until the cap is raised. |
 | `NO_ENDPOINT` | — | no | No llama.cpp endpoint is configured for a node in the placement. |
+| `OS_MEMORY_LIMIT_FAILED` | — | no | Agent: the operating-system memory limit for the worker could not be applied; the 250 ms watchdog still enforces the cap. |
 | `TUNNEL_FAILED` | 503 | yes | Coordinator: the tunnel to a node's worker could not be opened or verified. |
 | `TUNNEL_HANDSHAKE_FAILED` | — | no | Agent: a connection to the worker tunnel failed mutual-TLS verification and was refused. |
 | `TUNNEL_HANDSHAKE_TIMEOUT` | — | yes | Agent: a tunnel connection did not finish its TLS handshake in time. |
 | `TUNNEL_WORKER_UNREACHABLE` | — | yes | Agent: the tunnel accepted a connection but the local worker was not listening. |
+| `WORKER_CRASHED` | — | yes | Agent: the worker exited on its own; a crash report with its exit status and last output was saved. |
 | `WORKER_EXITED` | — | yes | Agent: the llama.cpp worker process exited on its own. |
 | `WORKER_LOST` | 503 | yes | A worker or the inference server stopped responding during a request. |
 | `WORKER_START_FAILED` | — | yes | Agent: the llama.cpp worker process could not be started. |

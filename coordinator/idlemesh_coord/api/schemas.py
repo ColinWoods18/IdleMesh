@@ -125,6 +125,7 @@ class Policy(Strict):
     battery_resume_pct: float = Field(default=40, ge=0, le=100)
     paused: bool = False
     warm_hold_minutes: int = Field(default=30, ge=0, le=1440)
+    max_level: float = Field(default=1.0, ge=0, le=1)  # the owner's ceiling on the contribution level (S4.9)
 
 
 NodeState = Literal["idle", "active", "sleeping", "draining", "serving"]
@@ -152,6 +153,18 @@ class EnrollIn(Strict):
     consent: Consent | None = None
 
 
+LevelReason = Literal["idle_ramp", "time_window", "policy", "user_activity", "local_load", "power"]
+
+
+class Contribution(Strict):
+    """The contribution governor's current level (S4.9, D-12)."""
+    level: float = Field(ge=0, le=1)
+    reason: LevelReason
+
+
+LogLevel = Literal["error", "warn", "info", "debug", "trace"]
+
+
 class HeartbeatIn(Strict):
     capabilities: Capabilities
     paused: bool = False  # effective local state after the agent applies owner policy
@@ -160,6 +173,32 @@ class HeartbeatIn(Strict):
     consent: Consent | None = None  # absent from agents older than S2.6: the stored record stays
     node_state: NodeState | None = None
     telemetry: TelemetryStatus | None = None
+    contribution: Contribution | None = None  # S4.9
+    log_level: LogLevel | None = None  # the agent's effective log level (S4.5)
+
+
+class CrashReportIn(Strict):
+    """An agent panic or a worker crash (S4.3; PROJECT_PLAN §6a CrashReport). Text fields are redacted by the agent
+    before they are written; the coordinator never receives prompt or response text."""
+    crash_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,64}$")  # made by the agent, so a retried upload is a repeat
+    kind: Literal["agent", "worker"]
+    ts: AwareDatetime
+    version: str = Field(max_length=40)
+    build_hash: str = Field(max_length=40)
+    os: str = Field(max_length=40)
+    arch: str = Field(max_length=40)
+    message: str = Field(max_length=4000)
+    location: str | None = Field(default=None, max_length=300)
+    backtrace: str | None = Field(default=None, max_length=32_000)
+    exit_status: str | None = Field(default=None, max_length=100)
+    log_tail: list[Annotated[str, Field(max_length=600)]] = Field(default=[], max_length=200)
+    config: dict = Field(default={})  # redacted: no token, keys or enrollment code
+
+
+class LogLevelIn(Strict):
+    """Raise (or lower) one node's log level for a limited time (S4.5). minutes=0 ends a window early."""
+    level: LogLevel = "debug"
+    minutes: int = Field(default=30, ge=0, le=240)
 
 
 class IdleRecord(Strict):
@@ -174,6 +213,8 @@ class IdleRecord(Strict):
     on_battery: bool
     battery_pct: float | None = Field(default=None, ge=0, le=100)
     state: NodeState
+    contribution_level: float | None = Field(default=None, ge=0, le=1)  # S4.9
+    level_reason: LevelReason | None = None
 
 
 class StateRecord(Strict):
@@ -233,6 +274,7 @@ class TelemetryBatchIn(Strict):
 
 class PolicyPatch(Strict):
     memory_cap_bytes: int | None = Field(default=None, ge=0)
+    max_level: float | None = Field(default=None, ge=0, le=1)  # highest contribution level (S4.9)
     allow_battery: bool | None = None
     battery_stop_pct: float | None = Field(default=None, ge=0, le=100)
     battery_resume_pct: float | None = Field(default=None, ge=0, le=100)

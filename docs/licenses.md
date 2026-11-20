@@ -11,7 +11,7 @@ review this file, together with the IP questions in PROJECT_PLAN Phase 4.
 
 ## Summary
 
-- **Rust agent:** 196 crates (all platforms in the lockfile).
+- **Rust agent:** 207 crates (all platforms in the lockfile).
 - **Python coordinator:** 23 packages needed at run time.
 - **Non-permissive dependencies:** 0. Where a crate offers a choice ("MIT OR Apache-2.0"), we rely on the permissive option shown.
 
@@ -56,12 +56,14 @@ copyright notices and licence texts (to build in sprint 10 with the installers, 
 | Package | Version | Licence (as declared) | We rely on |
 |---|---|---|---|
 | aho-corasick | 1.1.5 | Unlicense OR MIT | MIT |
+| android_system_properties | 0.1.6 | MIT OR Apache-2.0 | MIT |
 | anstream | 1.0.0 | MIT OR Apache-2.0 | MIT |
 | anstyle | 1.0.14 | MIT OR Apache-2.0 | MIT |
 | anstyle-parse | 1.0.0 | MIT OR Apache-2.0 | MIT |
 | anstyle-query | 1.1.5 | MIT OR Apache-2.0 | MIT |
 | anstyle-wincon | 3.0.11 | MIT OR Apache-2.0 | MIT |
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT | MIT |
+| autocfg | 1.5.1 | Apache-2.0 OR MIT | MIT |
 | base64 | 0.22.1 | MIT OR Apache-2.0 | MIT |
 | base64 | 0.23.1 | MIT OR Apache-2.0 | MIT |
 | bitflags | 2.13.2 | MIT OR Apache-2.0 | MIT |
@@ -73,6 +75,7 @@ copyright notices and licence texts (to build in sprint 10 with the installers, 
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 | MIT |
 | cfg_aliases | 0.2.2 | MIT | MIT |
 | chacha20 | 0.10.2 | MIT OR Apache-2.0 | MIT |
+| chrono | 0.4.45 | MIT OR Apache-2.0 | MIT |
 | clap | 4.6.7 | MIT OR Apache-2.0 | MIT |
 | clap_builder | 4.6.7 | MIT OR Apache-2.0 | MIT |
 | clap_derive | 4.6.7 | MIT OR Apache-2.0 | MIT |
@@ -91,6 +94,7 @@ copyright notices and licence texts (to build in sprint 10 with the installers, 
 | dispatch2 | 0.3.1 | Zlib OR Apache-2.0 OR MIT | MIT |
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 | MIT |
 | either | 1.19.0 | MIT OR Apache-2.0 | MIT |
+| equivalent | 1.0.3 | Apache-2.0 OR MIT | MIT |
 | find-msvc-tools | 0.1.15 | MIT OR Apache-2.0 | MIT |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 | MIT |
 | futures-channel | 0.3.34 | MIT OR Apache-2.0 | MIT |
@@ -102,6 +106,7 @@ copyright notices and licence texts (to build in sprint 10 with the installers, 
 | generic-array | 0.14.7 | MIT | MIT |
 | getrandom | 0.2.17 | MIT OR Apache-2.0 | MIT |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 | MIT |
+| hashbrown | 0.17.1 | MIT OR Apache-2.0 | MIT |
 | heck | 0.5.0 | MIT OR Apache-2.0 | MIT |
 | http | 1.5.0 | MIT OR Apache-2.0 | MIT |
 | http-body | 1.1.0 | MIT | MIT |
@@ -110,6 +115,8 @@ copyright notices and licence texts (to build in sprint 10 with the installers, 
 | hyper | 1.12.0 | MIT | MIT |
 | hyper-rustls | 0.27.10 | Apache-2.0 OR ISC OR MIT | MIT |
 | hyper-util | 0.1.21 | MIT | MIT |
+| iana-time-zone | 0.1.65 | MIT OR Apache-2.0 | MIT |
+| iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 | MIT |
 | icu_collections | 2.4.0 | Unicode-3.0 | Unicode-3.0 |
 | icu_locale_core | 2.4.0 | Unicode-3.0 | Unicode-3.0 |
 | icu_normalizer | 2.4.0 | Unicode-3.0 | Unicode-3.0 |
@@ -119,6 +126,7 @@ copyright notices and licence texts (to build in sprint 10 with the installers, 
 | icu_provider | 2.4.0 | Unicode-3.0 | Unicode-3.0 |
 | idna | 1.1.0 | MIT OR Apache-2.0 | MIT |
 | idna_adapter | 1.2.2 | Apache-2.0 OR MIT | MIT |
+| indexmap | 2.14.2 | Apache-2.0 OR MIT | MIT |
 | ipnet | 2.12.2 | MIT OR Apache-2.0 | MIT |
 | is_terminal_polyfill | 1.70.2 | MIT OR Apache-2.0 | MIT |
 | itoa | 1.0.18 | MIT OR Apache-2.0 | MIT |
@@ -133,6 +141,7 @@ copyright notices and licence texts (to build in sprint 10 with the installers, 
 | nix | 0.31.3 | MIT | MIT |
 | ntapi | 0.4.3 | Apache-2.0 OR MIT | MIT |
 | num-conv | 0.2.2 | MIT OR Apache-2.0 | MIT |
+| num-traits | 0.2.19 | MIT OR Apache-2.0 | MIT |
 | objc2 | 0.6.5 | MIT | MIT |
 | objc2-encode | 4.1.0 | MIT | MIT |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 | MIT |
@@ -170,6 +179,7 @@ copyright notices and licence texts (to build in sprint 10 with the installers, 
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 | MIT |
 | serde_json | 1.0.154 | MIT OR Apache-2.0 | MIT |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 | MIT |
+| serde_yaml | 0.9.34+deprecated | MIT OR Apache-2.0 | MIT |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 | MIT |
 | sharded-slab | 0.1.7 | MIT | MIT |
 | shlex | 2.0.1 | MIT OR Apache-2.0 | MIT |
@@ -204,6 +214,7 @@ copyright notices and licence texts (to build in sprint 10 with the installers, 
 | try-lock | 0.2.5 | MIT | MIT |
 | typenum | 1.20.1 | MIT OR Apache-2.0 | MIT |
 | unicode-ident | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| unsafe-libyaml | 0.2.11 | MIT | MIT |
 | untrusted | 0.9.0 | ISC | ISC |
 | url | 2.5.8 | MIT OR Apache-2.0 | MIT |
 | utf8_iter | 1.1.0 | Apache-2.0 OR MIT | MIT |

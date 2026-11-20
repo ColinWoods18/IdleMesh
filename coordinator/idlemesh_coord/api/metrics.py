@@ -100,12 +100,24 @@ def states(app, group_id: str, start: str, end: str) -> list[dict]:
     nodes = _nodes(app, group_id)
     marks, args = _in(nodes)
     rows = app.state.store.all(
-        "SELECT node, ts, state, seconds_since_input, session_locked, cpu_util, gpu_util FROM idle_samples"
-        f" WHERE node IN ({marks}) AND ts >= ? AND ts <= ? ORDER BY ts LIMIT {MAX_ROWS}", (*args, start, end))
+        "SELECT node, ts, state, seconds_since_input, session_locked, cpu_util, gpu_util, contribution_level,"
+        f" level_reason FROM idle_samples WHERE node IN ({marks}) AND ts >= ? AND ts <= ? ORDER BY ts"
+        f" LIMIT {MAX_ROWS}", (*args, start, end))
     return [{"ts": r["ts"], "node": nodes[r["node"]]["name"], "state": r["state"],
              "seconds_since_input": r["seconds_since_input"],
              "session_locked": None if r["session_locked"] is None else bool(r["session_locked"]),
-             "cpu_util": r["cpu_util"], "gpu_util": r["gpu_util"]} for r in rows]
+             "cpu_util": r["cpu_util"], "gpu_util": r["gpu_util"], "contribution_level": r["contribution_level"],
+             "level_reason": r["level_reason"]} for r in rows]
+
+
+def crashes(app, group_id: str, start: str, end: str) -> list[dict]:
+    """Crash reports (S4.3) from the group's nodes, newest first."""
+    rows = app.state.store.all(
+        "SELECT c.id, c.ts, c.kind, c.version, c.build_hash, c.os, c.summary, d.name FROM crash_reports c"
+        " JOIN devices d ON d.id = c.device_id WHERE c.group_id = ? AND c.ts >= ? AND c.ts <= ?"
+        f" ORDER BY c.ts DESC LIMIT {MAX_ROWS}", (group_id, start, end))
+    return [{"ts": r["ts"], "node": r["name"], "kind": r["kind"], "version": r["version"],
+             "build_hash": r["build_hash"], "os": r["os"], "summary": r["summary"], "crash_id": r["id"]} for r in rows]
 
 
 def error_rates(app, group_id: str, start: str, end: str, bucket_min: int) -> list[dict]:
@@ -155,6 +167,14 @@ def register(app: FastAPI) -> None:
         require_metrics(p)
         start, end = _range(from_ms, to_ms, hours)
         return await run_in_threadpool(states, request.app, p.group_id, start, end)
+
+    @app.get("/api/v1/metrics/crashes", tags=["metrics"])
+    async def metrics_crashes(request: Request, p: Principal = Depends(current), from_ms: int | None = None,
+                              to_ms: int | None = None, hours: float = 24 * 7):
+        """Agent and worker crash reports (S4.3) from the group's nodes, newest first."""
+        require_metrics(p)
+        start, end = _range(from_ms, to_ms, hours)
+        return await run_in_threadpool(crashes, request.app, p.group_id, start, end)
 
     @app.get("/api/v1/metrics/errors", tags=["metrics"])
     async def metrics_errors(request: Request, p: Principal = Depends(current), from_ms: int | None = None,

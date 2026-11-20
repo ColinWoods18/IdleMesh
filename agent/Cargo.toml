@@ -7,6 +7,7 @@ license = "UNLICENSED"
 publish = false
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive", "env"] }
 ctrlc = { version = "3", features = ["termination"] }
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
@@ -17,6 +18,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 sha2 = "0.10"
 sysinfo = "0.33"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time"] }
@@ -27,11 +29,17 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
     "Win32_System_Power",
     "Win32_System_RemoteDesktop",
     "Win32_System_SystemInformation",
+    "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 strip = true

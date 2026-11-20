@@ -23,16 +23,16 @@ telemetry:                          # D-11, privacy-office review pending (Sprin
   retention_days: 90                # idle samples and state changes older than this are deleted (hourly)
   pseudonymize_nodes: true          # telemetry is stored under a salted hash of the node ID (salt kept next to the database)
 
-idle:                               # when a workstation counts as idle; the rest is planned for S4.9
+idle:                               # when a workstation counts as idle, and the governor's ramp (S4.9)
   idle_after_s: 600                 # no keyboard or mouse input for this long, or a locked session (applies now)
-  ramp_s: 1800                      # contribution level rises from minimum to maximum over this time (D-12)
-  yield_level: 0.02                 # level a node drops to when its user returns (D-12)
-  yield_within_ms: 1000
+  ramp_s: 1800                      # contribution level rises from yield_level to 1.0 over this time (D-12)
+  yield_level: 0.02                 # level a node drops to within about a second of user input (D-12)
+  yield_within_ms: 1000             # (target; the agent checks input every second)
 
-contribution:                       # (planned, S4.9) defaults; owners can only lower them on their machine
-  max_memory_fraction: 0.5          # of the machine's RAM
-  max_cpu_fraction: 0.75
-  allow_battery: false
+contribution:                       # contribution governor (S4.9); owners can only lower these on their machine
+  max_memory_fraction: 0.5          # of the machine's RAM (planned: enrollment defaults, S10)
+  max_cpu_fraction: 0.75            # worker threads at level 1.0, as a share of its configured threads
+  allow_battery: false              # (planned: enrollment default, S10)
   windows:                          # time windows when nodes may contribute more (local time on the node)
     - name: overnight
       days: [mon, tue, wed, thu, fri, sat, sun]

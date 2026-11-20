@@ -383,6 +383,14 @@ pub fn parse_level(s: &str) -> Result<LevelFilter, String> {
     s.parse::<LevelFilter>().map_err(|_| format!("unknown log level {s:?} (use error, warn, info, debug or trace)"))
 }
 
+type LevelSetter = Box<dyn Fn(LevelFilter) -> Result<(), String> + Send + Sync>;
+
+/// Changes the console and file log level at run time (S4.5); set by `init`.
+static SET_LEVEL: OnceLock<LevelSetter> = OnceLock::new();
+static LEVEL: Mutex<Option<LevelFilter>> = Mutex::new(None);
+/// Where the JSON log is written, for diagnostic bundles (S4.4).
+static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
+
 /// Install the console and (when a directory is given) the JSON file outputs. Call once, early.
 pub fn init(opts: &Options) -> Result<(), String> {
     let file = match &opts.dir {
@@ -390,11 +398,62 @@ pub fn init(opts: &Options) -> Result<(), String> {
             .map_err(|e| format!("cannot open the log file in {}: {e}", dir.display()))?),
         None => None,
     };
+    if let Some(dir) = &opts.dir {
+        let _ = LOG_DIR.set(dir.clone());
+    }
+    let (console_filter, console) = tracing_subscriber::reload::Layer::new(opts.level);
+    let (file_filter, file_handle) = tracing_subscriber::reload::Layer::new(opts.level);
     let registry = tracing_subscriber::registry()
         .with(ErrorCountLayer.with_filter(LevelFilter::WARN))
-        .with(ConsoleLayer.with_filter(opts.level))
-        .with(file.map(|f| JsonFileLayer { file: Mutex::new(f) }.with_filter(opts.level)));
-    tracing::subscriber::set_global_default(registry).map_err(|e| e.to_string())
+        .with(ConsoleLayer.with_filter(console_filter))
+        .with(file.map(|f| JsonFileLayer { file: Mutex::new(f) }.with_filter(file_filter)));
+    tracing::subscriber::set_global_default(registry).map_err(|e| e.to_string())?;
+    *LEVEL.lock().unwrap_or_else(|e| e.into_inner()) = Some(opts.level);
+    let _ = SET_LEVEL.set(Box::new(move |level| {
+        console.modify(|f| *f = level).map_err(|e| e.to_string())?;
+        file_handle.modify(|f| *f = level).map_err(|e| e.to_string())
+    }));
+    Ok(())
+}
+
+/// The level the console and file outputs log at now.
+pub fn level() -> Option<LevelFilter> {
+    *LEVEL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Change the log level of both outputs (S4.5 remote log level windows).
+pub fn set_level(level: LevelFilter) -> Result<(), String> {
+    let set = SET_LEVEL.get().ok_or("logging is not initialised")?;
+    set(level)?;
+    *LEVEL.lock().unwrap_or_else(|e| e.into_inner()) = Some(level);
+    Ok(())
+}
+
+/// The directory of the JSON log, if the agent writes one.
+pub fn log_dir() -> Option<&'static Path> {
+    LOG_DIR.get().map(PathBuf::as_path)
+}
+
+/// The last `max_bytes` of the agent's JSON log (the current file, then rotated ones), oldest line first. Lines
+/// were redacted when written (S1.9), so the tail can be shared in a diagnostic bundle as it is.
+pub fn tail(max_bytes: usize) -> Vec<String> {
+    let Some(dir) = log_dir() else { return Vec::new() };
+    let mut lines: Vec<String> = Vec::new();
+    let mut budget = max_bytes;
+    for i in 0..10 {
+        let name = if i == 0 { LOG_FILE.to_string() } else { format!("{LOG_FILE}.{i}") };
+        let Ok(text) = std::fs::read_to_string(dir.join(name)) else { break };
+        for line in text.lines().rev() {
+            if line.len() + 1 > budget {
+                lines.reverse();
+                return lines;
+            }
+            budget -= line.len() + 1;
+            lines.push(line.to_string());
+        }
+    }
+    lines.reverse();
+    lines
 }
 
 #[cfg(test)]
@@ -500,7 +559,8 @@ mod tests {
         let sources = [include_str!("main.rs"), include_str!("worker.rs"), include_str!("tunnel.rs"),
                        include_str!("prefetch.rs"), include_str!("probe.rs"), include_str!("control.rs"),
                        include_str!("idle.rs"), include_str!("telemetry.rs"),
-                       include_str!("hardware.rs"), include_str!("health.rs")];
+                       include_str!("hardware.rs"), include_str!("health.rs"),
+                       include_str!("diagnostics.rs"), include_str!("governor.rs"), include_str!("node_config.rs")];
         let mut count = 0;
         for src in sources {
             for c in used.captures_iter(src) {

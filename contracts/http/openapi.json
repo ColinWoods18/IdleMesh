@@ -150,6 +150,36 @@
         "title": "Consent",
         "type": "object"
       },
+      "Contribution": {
+        "additionalProperties": false,
+        "description": "The contribution governor's current level (S4.9, D-12).",
+        "properties": {
+          "level": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Level",
+            "type": "number"
+          },
+          "reason": {
+            "enum": [
+              "idle_ramp",
+              "time_window",
+              "policy",
+              "user_activity",
+              "local_load",
+              "power"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "level",
+          "reason"
+        ],
+        "title": "Contribution",
+        "type": "object"
+      },
       "ConversationIn": {
         "additionalProperties": false,
         "properties": {
@@ -173,6 +203,119 @@
           "visibility"
         ],
         "title": "ConversationIn",
+        "type": "object"
+      },
+      "CrashReportIn": {
+        "additionalProperties": false,
+        "description": "An agent panic or a worker crash (S4.3; PROJECT_PLAN \u00a76a CrashReport). Text fields are redacted by the agent\nbefore they are written; the coordinator never receives prompt or response text.",
+        "properties": {
+          "arch": {
+            "maxLength": 40,
+            "title": "Arch",
+            "type": "string"
+          },
+          "backtrace": {
+            "anyOf": [
+              {
+                "maxLength": 32000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backtrace"
+          },
+          "build_hash": {
+            "maxLength": 40,
+            "title": "Build Hash",
+            "type": "string"
+          },
+          "config": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Config",
+            "type": "object"
+          },
+          "crash_id": {
+            "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "title": "Crash Id",
+            "type": "string"
+          },
+          "exit_status": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Status"
+          },
+          "kind": {
+            "enum": [
+              "agent",
+              "worker"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "maxLength": 300,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "log_tail": {
+            "default": [],
+            "items": {
+              "maxLength": 600,
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Log Tail",
+            "type": "array"
+          },
+          "message": {
+            "maxLength": 4000,
+            "title": "Message",
+            "type": "string"
+          },
+          "os": {
+            "maxLength": 40,
+            "title": "Os",
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 40,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "crash_id",
+          "kind",
+          "ts",
+          "version",
+          "build_hash",
+          "os",
+          "arch",
+          "message"
+        ],
+        "title": "CrashReportIn",
         "type": "object"
       },
       "CreateGroupIn": {
@@ -724,6 +867,34 @@
               }
             ]
           },
+          "contribution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Contribution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "log_level": {
+            "anyOf": [
+              {
+                "enum": [
+                  "error",
+                  "warn",
+                  "info",
+                  "debug",
+                  "trace"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Log Level"
+          },
           "node_state": {
             "anyOf": [
               {
@@ -801,6 +972,19 @@
             ],
             "title": "Battery Pct"
           },
+          "contribution_level": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contribution Level"
+          },
           "cpu_util": {
             "maximum": 1.0,
             "minimum": 0.0,
@@ -824,6 +1008,25 @@
             "const": "idle",
             "title": "Kind",
             "type": "string"
+          },
+          "level_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "idle_ramp",
+                  "time_window",
+                  "policy",
+                  "user_activity",
+                  "local_load",
+                  "power"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Level Reason"
           },
           "mem_free_gb": {
             "minimum": 0.0,
@@ -937,6 +1140,33 @@
         "title": "LidRecord",
         "type": "object"
       },
+      "LogLevelIn": {
+        "additionalProperties": false,
+        "description": "Raise (or lower) one node's log level for a limited time (S4.5). minutes=0 ends a window early.",
+        "properties": {
+          "level": {
+            "default": "debug",
+            "enum": [
+              "error",
+              "warn",
+              "info",
+              "debug",
+              "trace"
+            ],
+            "title": "Level",
+            "type": "string"
+          },
+          "minutes": {
+            "default": 30,
+            "maximum": 240.0,
+            "minimum": 0.0,
+            "title": "Minutes",
+            "type": "integer"
+          }
+        },
+        "title": "LogLevelIn",
+        "type": "object"
+      },
       "LoginIn": {
         "additionalProperties": false,
         "properties": {
@@ -1013,6 +1243,13 @@
             "title": "Battery Stop Pct",
             "type": "number"
           },
+          "max_level": {
+            "default": 1.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Max Level",
+            "type": "number"
+          },
           "memory_cap_bytes": {
             "minimum": 0.0,
             "title": "Memory Cap Bytes",
@@ -1087,6 +1324,19 @@
               }
             ],
             "title": "Disabled"
+          },
+          "max_level": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Level"
           },
           "memory_cap_bytes": {
             "anyOf": [
@@ -2024,6 +2274,107 @@
         ]
       }
     },
+    "/api/v1/devices/{device_id}/crash-reports": {
+      "post": {
+        "description": "An agent uploads a crash report it saved (its own panic, or its worker's exit). Repeats are ignored.",
+        "operationId": "upload_crash_report_api_v1_devices__device_id__crash_reports_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CrashReportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Crash Report",
+        "tags": [
+          "diagnostics"
+        ]
+      }
+    },
+    "/api/v1/devices/{device_id}/diagnostics/{bundle_id}": {
+      "post": {
+        "description": "The agent's answer to a request: the bundle as one JSON object (at most 1 MiB).",
+        "operationId": "upload_bundle_api_v1_devices__device_id__diagnostics__bundle_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "bundle_id",
+            "required": true,
+            "schema": {
+              "title": "Bundle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Bundle",
+        "tags": [
+          "diagnostics"
+        ]
+      }
+    },
     "/api/v1/devices/{device_id}/heartbeat": {
       "post": {
         "description": "Agents report capabilities and their locally enforced state; the response renews the lease.",
@@ -2387,6 +2738,268 @@
         ]
       }
     },
+    "/api/v1/groups/{group_id}/devices/{device_id}/crash-reports": {
+      "get": {
+        "operationId": "list_crash_reports_api_v1_groups__group_id__devices__device_id__crash_reports_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Crash Reports",
+        "tags": [
+          "diagnostics"
+        ]
+      }
+    },
+    "/api/v1/groups/{group_id}/devices/{device_id}/crash-reports/{crash_id}": {
+      "get": {
+        "operationId": "get_crash_report_api_v1_groups__group_id__devices__device_id__crash_reports__crash_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "crash_id",
+            "required": true,
+            "schema": {
+              "title": "Crash Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Crash Report",
+        "tags": [
+          "diagnostics"
+        ]
+      }
+    },
+    "/api/v1/groups/{group_id}/devices/{device_id}/diagnostics": {
+      "get": {
+        "operationId": "list_bundles_api_v1_groups__group_id__devices__device_id__diagnostics_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Bundles",
+        "tags": [
+          "diagnostics"
+        ]
+      },
+      "post": {
+        "description": "Ask a node for a diagnostic bundle. It is built and uploaded after the node's next heartbeat.",
+        "operationId": "request_bundle_api_v1_groups__group_id__devices__device_id__diagnostics_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Bundle",
+        "tags": [
+          "diagnostics"
+        ]
+      }
+    },
+    "/api/v1/groups/{group_id}/devices/{device_id}/diagnostics/{bundle_id}": {
+      "get": {
+        "operationId": "get_bundle_api_v1_groups__group_id__devices__device_id__diagnostics__bundle_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "bundle_id",
+            "required": true,
+            "schema": {
+              "title": "Bundle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Bundle",
+        "tags": [
+          "diagnostics"
+        ]
+      }
+    },
     "/api/v1/groups/{group_id}/devices/{device_id}/idle": {
       "get": {
         "description": "A device's idle samples and state changes, for its owner or a group administrator.",
@@ -2444,6 +3057,66 @@
         "summary": "Idle Timeline",
         "tags": [
           "devices"
+        ]
+      }
+    },
+    "/api/v1/groups/{group_id}/devices/{device_id}/log-level": {
+      "post": {
+        "description": "Open a window in which one node logs at `level`; it reverts by itself after `minutes`, on the node too,\neven if the coordinator is unreachable then. minutes=0 closes the window now.",
+        "operationId": "set_log_level_api_v1_groups__group_id__devices__device_id__log_level_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LogLevelIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Log Level",
+        "tags": [
+          "diagnostics"
         ]
       }
     },
@@ -2743,6 +3416,80 @@
         "summary": "Redeem",
         "tags": [
           "groups"
+        ]
+      }
+    },
+    "/api/v1/metrics/crashes": {
+      "get": {
+        "description": "Agent and worker crash reports (S4.3) from the group's nodes, newest first.",
+        "operationId": "metrics_crashes_api_v1_metrics_crashes_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 168,
+              "title": "Hours",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Crashes",
+        "tags": [
+          "metrics"
         ]
       }
     },

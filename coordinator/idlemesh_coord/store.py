@@ -10,7 +10,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES groups(id), owner_id TEXT NOT NULL REFERENCES members(id),
   name TEXT NOT NULL, public_key TEXT NOT NULL, token_verifier TEXT NOT NULL, capabilities TEXT NOT NULL,
   capabilities_rev INTEGER NOT NULL DEFAULT 1, policy TEXT NOT NULL, policy_rev INTEGER NOT NULL DEFAULT 1,
-  status TEXT NOT NULL, enrolled_at TEXT NOT NULL, last_seen TEXT, consent TEXT);
+  status TEXT NOT NULL, enrolled_at TEXT NOT NULL, last_seen TEXT, consent TEXT, log_override TEXT);
 CREATE TABLE IF NOT EXISTS enrollment_codes (
   id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES groups(id), member_id TEXT NOT NULL REFERENCES members(id),
   verifier TEXT NOT NULL, expires_at TEXT NOT NULL, used_at TEXT);
@@ -61,7 +61,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS requests_idem ON requests(member_id, client_re
 CREATE TABLE IF NOT EXISTS idle_samples (
   node TEXT NOT NULL, ts TEXT NOT NULL, org_id TEXT, site_id TEXT, seconds_since_input INTEGER,
   session_locked INTEGER, cpu_util REAL NOT NULL, mem_free_gb REAL NOT NULL, on_battery INTEGER NOT NULL,
-  battery_pct REAL, state TEXT NOT NULL, received_at TEXT NOT NULL, gpu_util REAL, PRIMARY KEY (node, ts));
+  battery_pct REAL, state TEXT NOT NULL, received_at TEXT NOT NULL, gpu_util REAL, contribution_level REAL,
+  level_reason TEXT, PRIMARY KEY (node, ts));
+CREATE TABLE IF NOT EXISTS crash_reports (
+  id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id), group_id TEXT NOT NULL, kind TEXT NOT NULL,
+  ts TEXT NOT NULL, received_at TEXT NOT NULL, version TEXT, build_hash TEXT, os TEXT, summary TEXT NOT NULL,
+  body TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS crash_reports_device ON crash_reports(device_id, ts);
+CREATE TABLE IF NOT EXISTS diagnostic_bundles (
+  id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id), group_id TEXT NOT NULL,
+  requested_by TEXT NOT NULL, requested_at TEXT NOT NULL, state TEXT NOT NULL, uploaded_at TEXT,
+  size_bytes INTEGER, body TEXT, error TEXT);
 CREATE TABLE IF NOT EXISTS node_health (
   node TEXT NOT NULL, ts TEXT NOT NULL, org_id TEXT, site_id TEXT, cpu_util REAL NOT NULL, gpu_util REAL,
   mem_used_gb REAL NOT NULL, gpu_mem_used_gb REAL, temp_c REAL, cache_disk_free_gb REAL,
@@ -122,6 +132,10 @@ class Store:
             add_column("devices", "consent", "TEXT")
         if version < 3:  # S3.5: GPU use in idle samples (node_health and error_events come from SCHEMA)
             add_column("idle_samples", "gpu_util", "REAL")
+        if version < 4:  # S4.5 remote log level; S4.9 contribution level (crash and bundle tables from SCHEMA)
+            add_column("devices", "log_override", "TEXT")
+            add_column("idle_samples", "contribution_level", "REAL")
+            add_column("idle_samples", "level_reason", "TEXT")
         if version < SCHEMA_VERSION:
             c.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 

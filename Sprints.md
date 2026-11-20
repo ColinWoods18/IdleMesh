@@ -170,7 +170,7 @@ through outages. Idle-data collection starts and keeps running from here on.
 
 | ID | Status |
 |---|---|
-| S3.1 | 🟡 IOKit `HIDIdleTime`, CoreGraphics lock state and lid (`AppleClamshellState`) through the C APIs; lid changes sent as events, sleep found as a wall-clock gap (S2.5). Builds and passes on CI's macOS runner. **Run on the MacBook** when it is awake |
+| S3.1 | 🟡 IOKit `HIDIdleTime`, CoreGraphics lock state and lid (`AppleClamshellState`) through the C APIs; lid changes sent as events, sleep found as a wall-clock gap (S2.5). Builds and passes on CI's macOS runner. On the MacBook (M1 Pro, macOS 15.5): seconds since input match `ioreg`'s `HIDIdleTime` (173 s and 173.8 s), lid open and unlocked read correctly, and the agent reports Metal. **Still to watch:** a lock and a lid close changing the readings |
 | S3.2 | ✅ logind for local graphical sessions; headless fallback from terminal input and wtmp. Verified on the Linux server (headless: idle time matched its last terminal input) |
 | S3.3 | ✅ CPU, RAM, unified memory, GPUs with VRAM (`nvidia-smi`, `system_profiler`, Windows CIM, Linux sysfs) in every heartbeat and the device registry. Verified on the dev PC (RTX 3500 Ada) and the Linux server (2× RTX A6000) |
 | S3.4 | ✅ CUDA, Metal, Vulkan and CPU detected per node; the existing decode probe still feeds placement |
@@ -205,10 +205,10 @@ we can find out why without visiting it.
 | S4.3 | ✅ Agent panics and worker crashes become crash reports (backtrace or exit status, last output, version, build hash, redacted config), uploaded when reachable. Forced panic and killed worker both tested; worker restarts back off |
 | S4.4 | ✅ Bundle requested by an admin, built and uploaded by the agent. Retrieved from the Linux server without touching it |
 | S4.5 | ✅ Debug window opens, writes debug lines, and closes by itself (also on the node if the coordinator is unreachable) |
-| S4.6 | 🟡 Dev PC and Linux server reporting (2 nodes, the Linux one through an SSH tunnel: see [docs/runbooks/test-fleet.md](docs/runbooks/test-fleet.md)). **MacBook to add** for 3 |
-| S4.7 | 🟡 Run on Windows and Linux with llama.cpp v0.9.0: deploy, requests, bench and drain checks 4a–4f all pass. Prediction error −34.5% (target ±30%). **MacBook to add** for the three-machine run |
+| S4.6 | ✅ Dev PC, Linux server and MacBook reporting (3 nodes; the Linux server and the Mac through SSH tunnels: see [docs/runbooks/test-fleet.md](docs/runbooks/test-fleet.md)). The Mac enrolled from a node config file |
+| S4.7 | ✅ Three-machine run with llama.cpp v0.9.0 (Windows CPU, Linux CPU, Mac Metal as head): ready after 32 s, 10/10 requests, drain checks 4a–4f all pass with the Mac as the target. **Open:** prediction error −42.8% (−34.5% on two machines; target ±30%), because CPU workers have no decode probe and are planned from defaults (moved to S5) |
 | S4.8 | ✅ Job Object on Windows (also ends the worker if the agent dies), `RLIMIT_DATA` on Linux; refusal tested on both. macOS keeps the watchdog |
-| S4.9 | ✅ Governor v0 with idle ramp, time windows and owner ceiling; applied through priority, threads and the offered memory; logged with reasons; unit-tested. The yield on real input still to be watched on hardware |
+| S4.9 | ✅ Governor v0 with idle ramp, time windows and owner ceiling; applied through priority, threads and the offered memory; logged with reasons; unit-tested. On hardware: input switches the reason to `user_activity` within the 1 s check and holds the yield level, and going on battery drops it to 0 (`power`). A drop from a high level on input is not yet seen, because the dev PC slept before its 30-minute ramp got far |
 
 ## Sprint 5 · Network probes and the network graph
 
@@ -221,6 +221,7 @@ we can find out why without visiting it.
 | S5.3 | Fill `link_mbps` in placement so the per-token traffic term counts (handoff backlog item 2) | The Wi-Fi under-prediction from Rounds 5 and 7 re-checked |
 | S5.4 | Coordinator `graph/`: networkx graph; clusterer v0 (threshold → connected components) | Clusters recomputed automatically; unit tests |
 | S5.5 | Network metrics and errors: probe failures by code, link degradation events | Grafana edges and clusters view, with probe health |
+| S5.6 | Run the decode probe on every worker, CPU ones included, so placement stops planning them from defaults (found in S4.7) | The three-machine run's speed prediction within ±30% |
 
 **Demo:** the cluster map compared with the real building layout.
 
@@ -352,4 +353,4 @@ Fill this in at each review.
 | 1 | S1.1, S1.3, S1.4, S1.6–S1.10, S1.12 | S1.2 push and merge, S1.5 first green run, S1.11 review, S1.13 messages sent | Write the logging foundation first: it caught an uncatalogued error code (`COORDINATOR_RESTART`) and a flaky Windows test on day one. |
 | 2 | S2.1, S2.3–S2.6 | S2.2 battery check (deferred), S2.7 collection | Pytest unit and smoke suites added alongside; they found an empty-hash login flaw. |
 | 3 | S3.2–S3.6 | S3.1 check on the MacBook | The campus network blocks servers from reaching Wi-Fi clients: test agents reach a coordinator on a laptop through SSH tunnels. |
-| 4 | S4.2–S4.5, S4.8, S4.9 (S4.1 design) | S4.6 and S4.7 third machine (MacBook), the governor's yield on hardware | Real llama.cpp runs found a 35% speed misprediction on CPU workers; the decode probe should run on every worker. |
+| 4 | S4.2–S4.5, S4.8, S4.9 (S4.1 design) | The governor's yield from a high level on hardware; the speed prediction (S5) | Real llama.cpp runs on two and three machines mispredicted speed by 35% and 43%: CPU workers need the decode probe too. |

@@ -1,0 +1,236 @@
+{
+  "benchmark": "pilot-3machine",
+  "utc": "20261120T190618Z",
+  "network": "PC=wifi Linux=ethernet(server VLAN)",
+  "deployment": {
+    "deployment_id": "dep_67fc187f9c1461de",
+    "model": "qwen2.5-0.5b-q8",
+    "state": "ready",
+    "explanation": {
+      "pipeline_version": "placement-pipeline/1",
+      "model": {
+        "name": "qwen2.5-0.5b-q8",
+        "revision": "Qwen/Qwen2.5-0.5B-Instruct-GGUF@q8_0",
+        "class": "dense",
+        "layers": 24,
+        "weights_bytes": 380507256,
+        "synthetic": false
+      },
+      "policy": {
+        "backend_digest": "llama.cpp-v0.9.0",
+        "headroom_fraction": 0.1,
+        "active_sequences": 1,
+        "require_all": true,
+        "local_device": "none",
+        "backend_cost": {
+          "name": "llama.cpp-v0.9.0-rpc",
+          "first_remote_ms": 3.58,
+          "extra_remote_ms": 0.74,
+          "round_trips_per_token": 1.02,
+          "bytes_per_token_per_remote": 620000.0
+        },
+        "weights": {
+          "bandwidth": 0.4,
+          "latency": 0.3,
+          "power": 0.2,
+          "stability": 0.1
+        }
+      },
+      "filtered_out": [],
+      "scores": [
+        {
+          "device_id": "dev_6c9f939d2591321b",
+          "total": 0.9885,
+          "components": {
+            "bandwidth": 1.0,
+            "latency": 0.9615,
+            "power": 1.0,
+            "stability": 1.0
+          }
+        },
+        {
+          "device_id": "dev_c2ddb1f6c3835b77",
+          "total": 0.8848,
+          "components": {
+            "bandwidth": 0.7947,
+            "latency": 0.8897,
+            "power": 1.0,
+            "stability": 1.0
+          }
+        }
+      ],
+      "single_device_fit": [
+        "dev_6c9f939d2591321b",
+        "dev_c2ddb1f6c3835b77"
+      ],
+      "feasible": true,
+      "stages": [
+        {
+          "device_id": "dev_c2ddb1f6c3835b77",
+          "name": "Linux server (env-colin)",
+          "layers": [
+            0,
+            1
+          ],
+          "holds_output_head": false,
+          "endpoint": "10.100.10.19:50100",
+          "bandwidth_gbps": 27.1,
+          "bandwidth_source": "reported",
+          "weights_bytes": 15854469,
+          "kv_bytes": 2097152,
+          "runtime_bytes": 67108864,
+          "headroom_bytes": 400000000,
+          "budget_bytes": 4000000000,
+          "margin_bytes": 3514939515,
+          "est_compute_ms": 0.59,
+          "rtt_ms": 4.77,
+          "rtt_source": "tunnel",
+          "link_mbps": null,
+          "est_network_ms": 4.87,
+          "transport": "mtls",
+          "rpc_endpoint": "127.0.0.1:49998",
+          "planned_rtt_ms": 6.2,
+          "rtt_measurement": {
+            "mean_ms": 4.77,
+            "median_ms": 4.27,
+            "min_ms": 2.97,
+            "p90_ms": 7.69,
+            "samples": 16
+          }
+        },
+        {
+          "device_id": "dev_6c9f939d2591321b",
+          "name": "Dev PC (Windows)",
+          "layers": [
+            1,
+            24
+          ],
+          "holds_output_head": true,
+          "endpoint": "127.0.0.1:50052",
+          "bandwidth_gbps": 34.1,
+          "bandwidth_source": "reported",
+          "weights_bytes": 509293360,
+          "kv_bytes": 48234496,
+          "runtime_bytes": 67108864,
+          "headroom_bytes": 400000000,
+          "budget_bytes": 4000000000,
+          "margin_bytes": 2975363280,
+          "est_compute_ms": 14.94,
+          "rtt_ms": 2.0,
+          "rtt_source": "heartbeat",
+          "link_mbps": null,
+          "est_network_ms": 2.04,
+          "transport": "plaintext"
+        }
+      ],
+      "reservation_bytes": {
+        "dev_c2ddb1f6c3835b77": 2097152,
+        "dev_6c9f939d2591321b": 48234496
+      },
+      "latency_budget": {
+        "compute_ms": 15.53,
+        "network_ms": 6.91,
+        "backend_overhead_ms": 4.32,
+        "remote_stages": 2,
+        "per_token_ms": 26.76,
+        "tokens_per_s": 37.37,
+        "dominant_stage": "dev_6c9f939d2591321b",
+        "rtt_source": "heartbeat+tunnel",
+        "backend_cost": {
+          "name": "llama.cpp-v0.9.0-rpc",
+          "first_remote_ms": 3.58,
+          "extra_remote_ms": 0.74,
+          "round_trips_per_token": 1.02,
+          "bytes_per_token_per_remote": 620000.0
+        },
+        "basis": "weights/effective bandwidth + fitted backend overhead + round trips and per-token traffic per remote stage; link bandwidth term omitted where unmeasured"
+      },
+      "capacity_basis": "fits a single eligible device budget",
+      "planned_latency_budget": {
+        "compute_ms": 15.53,
+        "network_ms": 8.36,
+        "backend_overhead_ms": 4.32,
+        "remote_stages": 2,
+        "per_token_ms": 28.21,
+        "tokens_per_s": 35.45,
+        "dominant_stage": "dev_6c9f939d2591321b",
+        "rtt_source": "heartbeat",
+        "basis": "weights/effective bandwidth + fitted backend overhead + round trips and per-token traffic per remote stage; link bandwidth term omitted where unmeasured"
+      }
+    }
+  },
+  "summary": {
+    "requests": 10,
+    "completed": 10,
+    "median_elapsed_s": 2.248,
+    "median_tokens_per_s": 17.91,
+    "fit_ms_per_token": 40.86,
+    "fit_fixed_s": 0.532,
+    "predicted_ms_per_token": 26.76,
+    "rtt_source": "heartbeat+tunnel",
+    "prediction_error_pct": -34.5,
+    "within_30pct": false
+  },
+  "runs": [
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.065,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.036,
+      "completion_tokens": 12
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.068,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.432,
+      "completion_tokens": 20
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.065,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.029,
+      "completion_tokens": 12
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.272,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.23,
+      "completion_tokens": 20
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.273,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.035,
+      "completion_tokens": 12
+    }
+  ]
+}

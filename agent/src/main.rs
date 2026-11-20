@@ -521,7 +521,8 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = stop.clone();
     let _ = ctrlc::set_handler(move || flag.store(true, std::sync::atomic::Ordering::SeqCst));
-    let mut paused = true;
+    // Local policy and power decide from the start; the worker also waits for a valid lease from a heartbeat.
+    let mut paused = effective_paused(&effective, take_probe_cached(&st.simulate, bandwidth)?.power, &mut battery_hold);
     let mut next_beat = Instant::now();
     // Hardware profile (S3.3, S3.4), once: it does not change while the agent runs.
     let hw = hardware_for(&st.simulate);

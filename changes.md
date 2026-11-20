@@ -15,6 +15,106 @@ and why.
 
 ---
 
+## 2026-11-20 — Sprint 4: config enrollment, crash reports, diagnostics, OS limits, governor
+
+Status: **on branch `sprint-4` (PR #6, stacked on Sprint 3).** Story-by-story status is in
+[Sprints.md](Sprints.md#sprint-4--agent-as-a-service-crash-reports-diagnostics-test-fleet-live).
+
+### What changed
+
+| Story | Change |
+|---|---|
+| S4.1 | Design only: [docs/design/agent-service.md](docs/design/agent-service.md). The service runs everything; a session helper on Windows and macOS reports input idle time and lock state, which a service cannot see. Nothing is installed or auto-started (D-21). |
+| S4.2 | `idlemesh-agent run --config node.yaml` enrolls from the file on first start (coordinator, fingerprint, one-time code, name, cap, consent), then runs. Unknown keys are refused. |
+| S4.3 | Crash reports. A panic hook saves message, location, backtrace, version, build hash (from git at build time), OS and a redacted config. A worker that exits on its own is saved with its exit status and last output lines. Reports go to `POST /api/v1/devices/{id}/crash-reports` when the coordinator is reachable, are deduplicated, and are logged on the coordinator as `AGENT_PANIC` or `WORKER_CRASHED`. Worker restarts after a crash back off (1 s doubling to 60 s). |
+| S4.4 | Diagnostic bundles. An owner or admin asks with `POST .../devices/{id}/diagnostics`; the next heartbeat reply carries the request. The agent uploads logs (up to about 500 KB), versions, capabilities, health, worker and telemetry status, the governor level, pending crash reports and a redacted config. Bundles are kept 14 days. |
+| S4.5 | `POST .../devices/{id}/log-level {level, minutes}` opens a window of up to 4 hours. The agent changes its log level at run time and reverts on its own when the window ends, even if the coordinator is unreachable then. `minutes: 0` closes it. |
+| S4.6 | Test fleet: the dev PC and the Linux server report to a coordinator on the dev PC ([docs/runbooks/test-fleet.md](docs/runbooks/test-fleet.md)). |
+| S4.7 | Legacy three-machine test re-run on current code with llama.cpp v0.9.0, on two machines so far (see "How it was verified"). |
+| S4.8 | The worker starts under an OS memory limit: a Job Object on Windows (which also kills the worker if the agent dies) and `RLIMIT_DATA` on Linux. macOS has no per-process limit, so the 250 ms watchdog remains its only guard. |
+| S4.9 | Contribution governor v0 (`governor.rs`). It sets the level and reason every second, from the idle ramp, the site's time windows (local time, past midnight handled), the owner's `max_level` (new policy field; the coordinator can only lower it), and pause or battery state. The level goes in heartbeats (`contribution`) and idle samples (`contribution_level`, `level_reason`), and changes are logged when the reason changes or the level moves by 0.05. |
+
+New error codes: `DIAGNOSTICS_NO_CONSENT`, `AGENT_PANIC`, `CRASH_REPORT_UPLOAD_FAILED`, `DIAGNOSTICS_FAILED`,
+`WORKER_CRASHED`, `OS_MEMORY_LIMIT_FAILED`. Database schema version 4: `crash_reports`, `diagnostic_bundles`,
+`devices.log_override` and the governor columns on `idle_samples`. New agent dependencies: `chrono`, `serde_yaml`
+and `libc` (all MIT or Apache-2.0; [docs/licenses.md](docs/licenses.md)).
+
+### Decisions
+
+| ID | Decision | Why | Status |
+|---|---|---|---|
+| D-20 | **Governor v0 applies the level in three ways.** CPU priority changes at once. Worker threads change at the next worker start. The memory offered to the planner follows the ceiling (time window, owner limit), not the momentary yield. On Linux and macOS an ordinary user can lower priority but not raise it again, so it recovers at the next worker start. | D-12: yield compute at once and give memory back at handoff, not on a mouse move. Raising priority needs privileges a service will have (S4.1 design). | Proposed |
+| D-21 | **No auto-start or service install until the installers (S10).** Test machines run the agent by hand. The service architecture is written down so the code fits it. | Colin, 2026-11-20: full control of test machines for now; installs that start at boot come much later. | Colin |
+
+### How it was verified
+
+- **Tests:** 70 Rust unit tests plus an integration test that the OS limit refuses an allocation past the cap
+  (Windows and Linux). Python: 209 tests, including end to end with the real agent: config enrollment, a forced
+  panic reported with its backtrace, a crashing worker reported with exit code and output, a bundle fetched, and
+  a debug window opened and closed.
+- **On hardware, with llama.cpp v0.9.0** (dev PC: loopback CPU worker and `llama-server`; Linux server: CPU worker
+  behind the mTLS tunnel):
+  - The deployment over both machines was ready in 13 s.
+  - 10 of 10 requests completed: 40.9 ms/token measured against 26.8 predicted.
+  - Drain checks 4a–4f all passed. On 4c, killing the agent also killed its worker through the Job Object.
+  - The stranger in 4f was refused with `TUNNEL_HANDSHAKE_FAILED`.
+  - Demo: a SIGKILLed worker on the Linux server was diagnosed from the coordinator alone, through its crash
+    report (signal 9, last output) and a fresh bundle (restart counted, worker running again).
+
+### Known gaps
+
+- The MacBook is not yet in the fleet or the llama.cpp run (it was asleep), so S3.1, S4.6 and S4.7 still need it.
+- **Speed prediction error −34.5%** (target ±30%): the CPU workers had no decode probe, so planning used the
+  memory-copy bandwidth, which overstates CPU decode speed. Run the decode probe on every worker (S5 or S6).
+- The governor's yield on real user input has been unit-tested but not yet watched on hardware.
+- Builds outside a git checkout record `build_hash: unknown`.
+- The Windows Job Object is attached just after the worker starts, so there is a moment of a few microseconds
+  before the limit applies.
+
+---
+
+## 2026-11-20 — Sprint 3: macOS and Linux idle, hardware profiler, node health, Grafana
+
+Status: **on branch `sprint-3` (PR #5).** Story-by-story status is in
+[Sprints.md](Sprints.md#sprint-3--macos-and-linux-idle-gpu-profiler-grafana).
+
+### What changed
+
+| Story | Change |
+|---|---|
+| S3.1 | macOS idle via IOKit `HIDIdleTime` (system-wide), the console session's lock state (CoreGraphics), and the lid (`AppleClamshellState`), all read through the C APIs with no helper processes. Lid changes are sent as `kind: lid` records. |
+| S3.2 | Linux idle via logind `IdleHint`, `IdleSinceHint` and `LockedHint` for a local graphical session. Headless fallback: the most recent input on any login terminal (`/dev/pts/*`, user-owned `/dev/tty*`), or the last login or logout from wtmp, or boot. Unknown never counts as idle (D-17). |
+| S3.3, S3.4 | Hardware profile: CPU model, cores and threads, RAM, unified memory, and GPUs with VRAM and driver. NVIDIA comes from `nvidia-smi`, Macs from `system_profiler`, Windows from CIM, and Linux from sysfs, which skips virtual displays. Backends detected: CUDA, Metal, Vulkan and CPU. The profile is sent in heartbeats and enrollment and shown in the device list. |
+| S3.5 | `kind: health` records (NodeHealthSample) and `kind: errors` (per-code counts of the agent's warnings and errors, codes only). New tables `node_health` and `error_events`; the coordinator also counts its own error codes once a minute. Each record kind needs its own consent: idle data (`idle`, `state`, `lid`) or diagnostics (`health`, `errors`) (D-19). |
+| S3.6 | Read-only metrics API (`/api/v1/metrics/{nodes,idle-heatmap,states,health,errors,crashes}`) for **metrics keys**: API keys with the `metrics` scope, which only administrators can create and which work on those paths only. [deploy/grafana/](deploy/grafana/) holds Grafana 13 in Docker with the Infinity data source, verifying the coordinator's own certificate, and a dashboard generated by `build_dashboard.py`. `pilot.py metrics-key` makes the key. |
+
+Database schema version 3 (`gpu_util` on idle samples, `node_health`, `error_events`).
+
+### Decisions
+
+| ID | Decision | Why | Status |
+|---|---|---|---|
+| D-18 | **Dashboards read a read-only metrics API, never the database.** Grafana authenticates with an administrator's metrics key, which works only on `/api/v1/metrics/`, and verifies the coordinator's certificate. Pseudonymous node keys (D-16) are mapped to device names inside the coordinator, for the key owner's group only. | A shared SQLite file across Docker's file sharing is unsafe while the coordinator writes it. An API keeps the database private and lets Grafana run anywhere. A key that cannot change anything limits the damage if it leaks. | Proposed |
+| D-19 | **Consent is per record kind.** Idle data covers idle samples, state changes and lid events. Diagnostics covers health samples, error counts, crash reports, bundles and remote log levels. | Matches S2.6: what a person does at the machine is a different question from how the node itself is doing. | Proposed |
+
+### Fixes found on the way
+
+- Metrics queries missed rows stamped at the exact end of the range. Windows' clock ticks every ~15.6 ms, so a
+  row written and queried in the same tick was dropped. Ranges now include their end.
+- API keys authenticate on every endpoint, and most check only the member's role. A metrics key is therefore
+  refused outside `/api/v1/metrics/` by the authentication layer itself, and a test checks that it cannot deploy,
+  list members or chat.
+
+### Known gaps
+
+- The campus network does not let the server network open connections to Wi-Fi clients. Test agents reach a
+  coordinator on the dev laptop through SSH reverse tunnels ([docs/runbooks/test-fleet.md](docs/runbooks/test-fleet.md)).
+  A site coordinator belongs on a reachable server.
+- Hour-of-week figures use the coordinator's local time zone.
+- Grafana updates its bundled plugins at start. The Infinity plugin is pinned.
+
+---
+
 ## 2026-11-19 — Sprint 2: Windows idle monitor and telemetry pipeline
 
 Status: **on branch `sprint-2`.** Story-by-story status is in

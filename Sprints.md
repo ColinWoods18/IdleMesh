@@ -144,7 +144,7 @@ through outages. Idle-data collection starts and keeps running from here on.
 | ID | Status |
 |---|---|
 | S2.1 | ✅ Idle seconds, lock state and CPU use; unit tests. `idlemesh-agent idle --watch` for the manual check on the dev PC |
-| S2.2 | 🟡 Decoding unit-tested; reads AC on the dev laptop. **Unplug it once** to confirm battery and percentage |
+| S2.2 | 🟡 Decoding unit-tested; reads AC on the dev laptop. The on-battery check is deferred (Colin, 2026-11-20): most nodes will be plugged in |
 | S2.3 | ✅ Ingest endpoint, SQLite tables, schema version, pseudonymous node key (D-16), `org_id`/`site_id`, retention |
 | S2.4 | ✅ On-disk buffer, capped, oldest dropped first, drops counted; end-to-end outage test passes with no gap. Error events still travel as log lines; `ErrorEvent` records ↪ S3.5 with node health |
 | S2.5 | ✅ State machine and sleep detection with tests; changes logged and sent as events |
@@ -166,6 +166,17 @@ through outages. Idle-data collection starts and keeps running from here on.
 
 **Demo:** Grafana showing data from 2 or more OSes, including an induced error appearing by code.
 
+**Status** (details in [changes.md](changes.md), "Sprint 3"):
+
+| ID | Status |
+|---|---|
+| S3.1 | 🟡 IOKit `HIDIdleTime`, CoreGraphics lock state and lid (`AppleClamshellState`) through the C APIs; lid changes sent as events, sleep found as a wall-clock gap (S2.5). Builds and passes on CI's macOS runner. **Run on the MacBook** when it is awake |
+| S3.2 | ✅ logind for local graphical sessions; headless fallback from terminal input and wtmp. Verified on the Linux server (headless: idle time matched its last terminal input) |
+| S3.3 | ✅ CPU, RAM, unified memory, GPUs with VRAM (`nvidia-smi`, `system_profiler`, Windows CIM, Linux sysfs) in every heartbeat and the device registry. Verified on the dev PC (RTX 3500 Ada) and the Linux server (2× RTX A6000) |
+| S3.4 | ✅ CUDA, Metal, Vulkan and CPU detected per node; the existing decode probe still feeds placement |
+| S3.5 | ✅ `NodeHealthSample` and per-code error counts from agents; the coordinator counts its own codes. Counters restart only with `agent_uptime_s`. Diagnostics consent required |
+| S3.6 | ✅ [deploy/grafana/](deploy/grafana/): Docker Compose, Infinity data source on a read-only metrics API (D-18), generated dashboard. Demo run with Windows and Linux nodes and an induced error shown by code |
+
 ## Sprint 4 · Agent as a service, crash reports, diagnostics; test fleet live
 
 **Goal:** 3–5 real workstations run the agent as a service, and when something breaks on one of them,
@@ -184,6 +195,20 @@ we can find out why without visiting it.
 | S4.9 | **Contribution governor v0 (D-12):** a level from 0.0 to 1.0, from the idle-duration ramp, time windows (overnight or weekends) and admin and owner settings; applied through CPU priority, thread count and memory cap; reported in heartbeats and `IdleSample` | Level rises with idle time and drops within about 1 s on input; every level change is logged with its reason |
 
 **Demo:** crash a worker on a fleet machine and diagnose it entirely from the coordinator.
+
+**Status** (details in [changes.md](changes.md), "Sprint 4"):
+
+| ID | Status |
+|---|---|
+| S4.1 | 📐 Design only, by decision (Colin, 2026-11-20: no auto-start until much later): [docs/design/agent-service.md](docs/design/agent-service.md). Service plus a session helper on Windows and macOS |
+| S4.2 | ✅ `idlemesh-agent run --config node.yaml` enrolls on first start, then runs; tested end to end |
+| S4.3 | ✅ Agent panics and worker crashes become crash reports (backtrace or exit status, last output, version, build hash, redacted config), uploaded when reachable. Forced panic and killed worker both tested; worker restarts back off |
+| S4.4 | ✅ Bundle requested by an admin, built and uploaded by the agent. Retrieved from the Linux server without touching it |
+| S4.5 | ✅ Debug window opens, writes debug lines, and closes by itself (also on the node if the coordinator is unreachable) |
+| S4.6 | 🟡 Dev PC and Linux server reporting (2 nodes, the Linux one through an SSH tunnel: see [docs/runbooks/test-fleet.md](docs/runbooks/test-fleet.md)). **MacBook to add** for 3 |
+| S4.7 | 🟡 Run on Windows and Linux with llama.cpp v0.9.0: deploy, requests, bench and drain checks 4a–4f all pass. Prediction error −34.5% (target ±30%). **MacBook to add** for the three-machine run |
+| S4.8 | ✅ Job Object on Windows (also ends the worker if the agent dies), `RLIMIT_DATA` on Linux; refusal tested on both. macOS keeps the watchdog |
+| S4.9 | ✅ Governor v0 with idle ramp, time windows and owner ceiling; applied through priority, threads and the offered memory; logged with reasons; unit-tested. The yield on real input still to be watched on hardware |
 
 ## Sprint 5 · Network probes and the network graph
 
@@ -325,3 +350,6 @@ Fill this in at each review.
 | Sprint | Done | Carried over | Retro note |
 |---|---|---|---|
 | 1 | S1.1, S1.3, S1.4, S1.6–S1.10, S1.12 | S1.2 push and merge, S1.5 first green run, S1.11 review, S1.13 messages sent | Write the logging foundation first: it caught an uncatalogued error code (`COORDINATOR_RESTART`) and a flaky Windows test on day one. |
+| 2 | S2.1, S2.3–S2.6 | S2.2 battery check (deferred), S2.7 collection | Pytest unit and smoke suites added alongside; they found an empty-hash login flaw. |
+| 3 | S3.2–S3.6 | S3.1 check on the MacBook | The campus network blocks servers from reaching Wi-Fi clients: test agents reach a coordinator on a laptop through SSH tunnels. |
+| 4 | S4.2–S4.5, S4.8, S4.9 (S4.1 design) | S4.6 and S4.7 third machine (MacBook), the governor's yield on hardware | Real llama.cpp runs found a 35% speed misprediction on CPU workers; the decode probe should run on every worker. |

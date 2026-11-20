@@ -1,0 +1,35 @@
+# Grafana for IdleMesh (S3.6): node list, idle heatmap, node health and error rates.
+# Setup and the metrics key: deploy/grafana/README.md.
+#
+#   docker compose --env-file .env up -d      (from this folder)
+#
+# Grafana reads the coordinator's read-only metrics API over HTTPS with an administrator's metrics key; it never
+# opens the database. The coordinator's own certificate is mounted read-only so Grafana verifies it.
+name: idlemesh-grafana
+
+services:
+  grafana:
+    image: grafana/grafana:13.2.5
+    ports:
+      - "127.0.0.1:3000:3000"          # this machine only
+    environment:
+      GF_PLUGINS_PREINSTALL_SYNC: "yesoreyeram-infinity-datasource@4.1.5"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      IDLEMESH_URL: "${IDLEMESH_URL:-https://difa-coordinator:8765}"
+      IDLEMESH_METRICS_KEY: "${IDLEMESH_METRICS_KEY:?set IDLEMESH_METRICS_KEY in .env (see README.md)}"
+    extra_hosts:
+      # The coordinator's certificate names difa-coordinator; point that name at the Docker host.
+      - "difa-coordinator:host-gateway"
+    volumes:
+      - ./provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards:/var/lib/grafana/dashboards:ro
+      - "${IDLEMESH_CONTROL_CERT:?set IDLEMESH_CONTROL_CERT in .env (see README.md)}:/etc/idlemesh/coordinator-control.crt:ro"
+      - grafana-data:/var/lib/grafana
+    restart: "no"                      # runs while you test; nothing starts on its own
+
+volumes:
+  grafana-data: {}

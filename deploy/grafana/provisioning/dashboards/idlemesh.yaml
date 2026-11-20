@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: IdleMesh
+    folder: IdleMesh
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false    # edit build_dashboard.py, not the UI, so the committed dashboard stays the source
+    options:
+      path: /var/lib/grafana/dashboards

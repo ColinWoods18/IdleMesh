@@ -15,6 +15,7 @@
 
 use regex::Regex;
 use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -316,6 +317,61 @@ impl<S: Subscriber> Layer<S> for ConsoleLayer {
     }
 }
 
+/// Counts of warnings and errors by error code (S3.5, S3.6): `pending` is drained into telemetry, `total`
+/// counts from the agent's start for health counters such as tunnel errors. Only codes are kept, never text.
+struct ErrorCounts {
+    pending: BTreeMap<String, u64>,
+    total: BTreeMap<String, u64>,
+}
+
+static ERRORS: Mutex<ErrorCounts> = Mutex::new(ErrorCounts { pending: BTreeMap::new(), total: BTreeMap::new() });
+
+struct ErrorCountLayer;
+
+#[derive(Default)]
+struct CodeOnly(Option<String>);
+
+impl Visit for CodeOnly {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "error_code" {
+            self.0 = Some(value.to_string());
+        }
+    }
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "error_code" {
+            self.0 = Some(format!("{value:?}").trim_matches('"').to_string());
+        }
+    }
+}
+
+impl<S: Subscriber> Layer<S> for ErrorCountLayer {
+    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        let mut code = CodeOnly::default();
+        event.record(&mut code);
+        if let Some(c) = code.0 {
+            count_error(&c);
+        }
+    }
+}
+
+fn count_error(code: &str) {
+    if let Ok(mut e) = ERRORS.lock() {
+        *e.pending.entry(code.to_string()).or_default() += 1;
+        *e.total.entry(code.to_string()).or_default() += 1;
+    }
+}
+
+/// Error codes counted since the last call, for one telemetry record.
+pub fn take_error_counts() -> BTreeMap<String, u64> {
+    ERRORS.lock().map(|mut e| std::mem::take(&mut e.pending)).unwrap_or_default()
+}
+
+/// Errors since the agent started whose code starts with `prefix` (for example "TUNNEL_").
+pub fn error_total(prefix: &str) -> u64 {
+    ERRORS.lock().map(|e| e.total.iter().filter(|(k, _)| k.starts_with(prefix)).map(|(_, v)| v).sum())
+        .unwrap_or(0)
+}
+
 pub struct Options {
     pub level: LevelFilter,
     pub dir: Option<PathBuf>,
@@ -335,6 +391,7 @@ pub fn init(opts: &Options) -> Result<(), String> {
         None => None,
     };
     let registry = tracing_subscriber::registry()
+        .with(ErrorCountLayer.with_filter(LevelFilter::WARN))
         .with(ConsoleLayer.with_filter(opts.level))
         .with(file.map(|f| JsonFileLayer { file: Mutex::new(f) }.with_filter(opts.level)));
     tracing::subscriber::set_global_default(registry).map_err(|e| e.to_string())
@@ -421,6 +478,18 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn error_codes_are_counted_without_text() {
+        count_error("TUNNEL_HANDSHAKE_FAILED");
+        count_error("TUNNEL_HANDSHAKE_FAILED");
+        count_error("WORKER_EXITED");
+        assert!(error_total("TUNNEL_") >= 2);
+        let taken = take_error_counts();
+        assert!(taken["TUNNEL_HANDSHAKE_FAILED"] >= 2 && taken["WORKER_EXITED"] >= 1);
+        assert!(!take_error_counts().contains_key("WORKER_EXITED")); // drained, but totals stay
+        assert!(error_total("TUNNEL_") >= 2);
+    }
+
     /// Every error code the agent logs is in the shared catalog (S1.8).
     #[test]
     fn agent_error_codes_are_catalogued() {
@@ -430,7 +499,8 @@ mod tests {
         let used = Regex::new(r#"error_code\s*=\s*"([A-Z][A-Z0-9_]+)""#).unwrap();
         let sources = [include_str!("main.rs"), include_str!("worker.rs"), include_str!("tunnel.rs"),
                        include_str!("prefetch.rs"), include_str!("probe.rs"), include_str!("control.rs"),
-                       include_str!("idle.rs"), include_str!("telemetry.rs")];
+                       include_str!("idle.rs"), include_str!("telemetry.rs"),
+                       include_str!("hardware.rs"), include_str!("health.rs")];
         let mut count = 0;
         for src in sources {
             for c in used.captures_iter(src) {

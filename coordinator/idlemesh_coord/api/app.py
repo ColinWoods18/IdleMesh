@@ -28,7 +28,7 @@ from ..security import Passwords, fingerprint, matches, new_id, new_secret, veri
 from ..store import Store, iso, now, parse
 from ..tokens import context_tokens
 from ..transport import CoordinatorIdentity, TunnelError, TunnelManager, cert_fingerprint, is_certificate
-from . import compat, errors
+from . import compat, errors, metrics
 from .auth import SESSION_COOKIE, bearer, current, require_admin, require_group, require_session
 from .errors import ApiError, not_found
 from .schemas import (CodeIn, ConversationIn, CreateGroupIn, CredentialIn, DeploymentIn, EnrollIn, ForkIn,
@@ -79,6 +79,7 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
     app.state.node_keys = telemetry.NodeKeys(os.path.dirname(os.path.abspath(settings.db_path)),
                                              settings.pseudonymize_nodes)
     app.state.login_attempts = {}
+    obs.install_error_counter()
     errors.install(app)
 
     @app.middleware("http")
@@ -112,6 +113,7 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
 
     register(app)
     compat.register(app)
+    metrics.register(app)
     return app
 
 
@@ -151,8 +153,16 @@ async def _liveness_monitor(app) -> None:
     """Stop using a deployment as soon as a required device misses heartbeats (FR 04, spec 10)."""
     store, sched, settings = app.state.store, app.state.scheduler, app.state.settings
     next_prune = 0.0
+    next_error_flush = time.monotonic() + 60
     while True:
         await asyncio.sleep(1)
+        if time.monotonic() >= next_error_flush:  # the coordinator's own error counts, once a minute (S3.6)
+            next_error_flush = time.monotonic() + 60
+            try:
+                await run_in_threadpool(telemetry.record_coordinator_errors, store, obs.take_error_counts(),
+                                        settings.org_id, settings.site_id)
+            except Exception:  # noqa: BLE001 - never let metrics stop the liveness monitor
+                log.exception("cannot record error counts", extra={"error_code": "INTERNAL"})
         if time.monotonic() >= next_prune:  # telemetry retention (S2.3), hourly
             next_prune = time.monotonic() + 3600
             try:
@@ -515,7 +525,13 @@ def register(app: FastAPI) -> None:
         require_session(p)  # fresh, interactive authentication path (spec 6.5)
         cid, secret = new_id("key"), "difa_" + new_secret(32)
         expires = now() + timedelta(days=body.expires_days)
-        scopes = sorted(set(body.scopes) | {"inference"})
+        if "metrics" in body.scopes:  # a dashboard key: read-only metrics, nothing else (S3.6)
+            require_admin(p)
+            if set(body.scopes) != {"metrics"}:
+                raise ApiError(400, "INVALID_FIELDS", "A metrics key carries the metrics scope only.")
+            scopes = ["metrics"]
+        else:
+            scopes = sorted(set(body.scopes) | {"inference"})
         with S(request).tx() as c:
             c.execute("INSERT INTO credentials VALUES (?,?,?,?,?,?,?,?,?)",
                       (cid, p.member_id, p.group_id, body.name, verifier(secret), ",".join(scopes), iso(expires), None,
@@ -630,11 +646,14 @@ def register(app: FastAPI) -> None:
 
     @app.post("/api/v1/devices/{device_id}/telemetry", tags=["devices"])
     async def upload_telemetry(device_id: str, body: TelemetryBatchIn, request: Request):
-        """Idle samples and state changes from an agent's on-disk buffer (S2.3, S2.4). Repeats are ignored."""
+        """Idle samples, state changes, health and error counts from an agent's on-disk buffer (S2.3, S2.4,
+        S3.5). Repeats are ignored. Each record kind needs its own consent: idle data or diagnostics."""
         d = _device_by_token(request, device_id)
-        if not telemetry.has_consent(json.loads(d["consent"]) if d["consent"] else None):
-            raise ApiError(403, "TELEMETRY_NO_CONSENT",
-                           "The device owner has not consented to idle-data collection.")
+        kinds = {r.kind for r in body.records} or {"idle"}
+        if not telemetry.has_consent(json.loads(d["consent"]) if d["consent"] else None, kinds):
+            what = ("diagnostics" if telemetry.has_consent(json.loads(d["consent"]) if d["consent"] else None,
+                                                           kinds & telemetry.IDLE_KINDS) else "idle-data collection")
+            raise ApiError(403, "TELEMETRY_NO_CONSENT", f"The device owner has not consented to {what}.")
         node = request.app.state.node_keys.key(device_id)
         return await run_in_threadpool(telemetry.ingest, S(request), node, body, settings.org_id, settings.site_id)
 
@@ -708,12 +727,15 @@ def register(app: FastAPI) -> None:
     async def list_devices(group_id: str, request: Request, p: Principal = Depends(current)):
         require_group(p, group_id)
         out = []
+        hardware = {d["id"]: json.loads(d["capabilities"]).get("hardware")
+                    for d in S(request).all("SELECT id, capabilities FROM devices WHERE group_id = ?", (group_id,))}
         for prof in _profiles(S(request), group_id, settings, request.app.state.path_rtt):
             state = ("unavailable" if not prof.ready else "paused" if prof.paused else
                      "incompatible" if prof.backend_digest != request.app.state.runtime.backend_digest else "ready")
             out.append({"device_id": prof.device_id, "name": prof.name, "os": prof.os, "arch": prof.arch,
                         "state": state, "budget_bytes": prof.budget_bytes, "power": prof.power,
-                        "worker_running": prof.endpoint is not None, "node_state": prof.node_state})
+                        "worker_running": prof.endpoint is not None, "node_state": prof.node_state,
+                        "hardware": hardware.get(prof.device_id)})
         return {"devices": out}
 
     # --- Deployments ------------------------------------------------------------------------

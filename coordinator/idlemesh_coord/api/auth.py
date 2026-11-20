@@ -9,6 +9,13 @@ from .errors import ApiError
 
 SESSION_COOKIE = "idlemesh_session"
 UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
+METRICS_PREFIX = "/api/v1/metrics/"
+
+
+def require_metrics(p: Principal) -> None:
+    """Dashboards: an administrator's metrics key, or an administrator signed in."""
+    if not p.is_admin or (p.via == "credential" and Scope.METRICS not in p.scopes):
+        raise ApiError(403, "FORBIDDEN", "Reading metrics needs an administrator's metrics key or session.")
 
 
 def _unauthorized() -> ApiError:
@@ -36,6 +43,9 @@ async def current(request: Request) -> Principal:
         if not cred or cred["revoked_at"] or parse(cred["expires_at"]) <= now():
             raise _unauthorized()
         scopes = frozenset(Scope(s) for s in cred["scopes"].split(","))
+        if Scope.METRICS in scopes and not request.url.path.startswith(METRICS_PREFIX):
+            # A dashboard key reads metrics and nothing else, whoever created it (S3.6).
+            raise ApiError(403, "FORBIDDEN", "This key can only read metrics.")
         return _member_principal(store, cred["member_id"], "credential", scopes)
 
     sid = request.cookies.get(SESSION_COOKIE)

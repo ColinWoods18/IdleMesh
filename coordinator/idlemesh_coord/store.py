@@ -10,7 +10,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -61,7 +61,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS requests_idem ON requests(member_id, client_re
 CREATE TABLE IF NOT EXISTS idle_samples (
   node TEXT NOT NULL, ts TEXT NOT NULL, org_id TEXT, site_id TEXT, seconds_since_input INTEGER,
   session_locked INTEGER, cpu_util REAL NOT NULL, mem_free_gb REAL NOT NULL, on_battery INTEGER NOT NULL,
-  battery_pct REAL, state TEXT NOT NULL, received_at TEXT NOT NULL, PRIMARY KEY (node, ts));
+  battery_pct REAL, state TEXT NOT NULL, received_at TEXT NOT NULL, gpu_util REAL, PRIMARY KEY (node, ts));
+CREATE TABLE IF NOT EXISTS node_health (
+  node TEXT NOT NULL, ts TEXT NOT NULL, org_id TEXT, site_id TEXT, cpu_util REAL NOT NULL, gpu_util REAL,
+  mem_used_gb REAL NOT NULL, gpu_mem_used_gb REAL, temp_c REAL, cache_disk_free_gb REAL,
+  agent_uptime_s INTEGER NOT NULL, worker_restarts INTEGER NOT NULL, cap_kills INTEGER NOT NULL,
+  tunnel_errors INTEGER NOT NULL, telemetry_buffer_bytes INTEGER NOT NULL, telemetry_dropped INTEGER NOT NULL,
+  received_at TEXT NOT NULL, PRIMARY KEY (node, ts));
+CREATE INDEX IF NOT EXISTS node_health_ts ON node_health(ts);
+CREATE TABLE IF NOT EXISTS error_events (
+  node TEXT NOT NULL, ts TEXT NOT NULL, source TEXT NOT NULL, code TEXT NOT NULL, count INTEGER NOT NULL,
+  org_id TEXT, site_id TEXT, PRIMARY KEY (node, ts, source, code));
+CREATE INDEX IF NOT EXISTS error_events_ts ON error_events(ts);
 CREATE TABLE IF NOT EXISTS node_events (
   node TEXT NOT NULL, ts TEXT NOT NULL, kind TEXT NOT NULL, from_state TEXT, to_state TEXT NOT NULL,
   org_id TEXT, site_id TEXT, received_at TEXT NOT NULL, PRIMARY KEY (node, ts, kind, to_state));
@@ -103,9 +114,14 @@ class Store:
     def _migrate(c) -> None:
         """Bring a database made by an older coordinator up to SCHEMA_VERSION. New tables come from SCHEMA."""
         version = c.execute("SELECT version FROM schema_version").fetchone()[0]
+        def add_column(table: str, column: str, decl: str) -> None:
+            if column not in {r[1] for r in c.execute(f"PRAGMA table_info({table})")}:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
         if version < 2:  # S2.6: the owner's consent record on each device
-            if "consent" not in {r[1] for r in c.execute("PRAGMA table_info(devices)")}:
-                c.execute("ALTER TABLE devices ADD COLUMN consent TEXT")
+            add_column("devices", "consent", "TEXT")
+        if version < 3:  # S3.5: GPU use in idle samples (node_health and error_events come from SCHEMA)
+            add_column("idle_samples", "gpu_util", "REAL")
         if version < SCHEMA_VERSION:
             c.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 

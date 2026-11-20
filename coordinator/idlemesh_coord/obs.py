@@ -21,6 +21,7 @@ import logging
 import logging.handlers
 import re
 import sys
+import threading
 import traceback
 import uuid
 from contextlib import contextmanager
@@ -142,6 +143,41 @@ class JsonFormatter(logging.Formatter):
         if record.exc_info:
             line["exception"] = "".join(traceback.format_exception(*record.exc_info))[-8000:]
         return redact(json.dumps(line, default=str, ensure_ascii=False))
+
+
+class ErrorCounter(logging.Handler):
+    """Counts log events that carry an error code (S3.6 error-rate panel). Codes only, never messages."""
+
+    def __init__(self):
+        super().__init__(logging.INFO)
+        self._counts: dict[str, int] = {}
+        self._lock_counts = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        code = getattr(record, "error_code", None)
+        if code:
+            with self._lock_counts:
+                self._counts[code] = self._counts.get(code, 0) + 1
+
+    def take(self) -> dict[str, int]:
+        with self._lock_counts:
+            out, self._counts = self._counts, {}
+        return out
+
+
+_COUNTER = ErrorCounter()
+
+
+def install_error_counter() -> None:
+    """Attach the counter to the root logger (idempotent; setup_logging replaces handlers, so call it after)."""
+    root = logging.getLogger()
+    if _COUNTER not in root.handlers:
+        root.addHandler(_COUNTER)
+
+
+def take_error_counts() -> dict[str, int]:
+    """Error codes logged since the last call, for the coordinator's own row in error_events."""
+    return _COUNTER.take()
 
 
 def log(logger: logging.Logger, level: int, message: str, *, error_code: str | None = None, **fields) -> None:

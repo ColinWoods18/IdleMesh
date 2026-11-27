@@ -1,0 +1,281 @@
+{
+  "benchmark": "pilot-3machine",
+  "utc": "20261120T212314Z",
+  "network": "DevPC=wifi Linux=ethernet Mac=wifi",
+  "deployment": {
+    "deployment_id": "dep_a8e753f7bca85b73",
+    "model": "qwen2.5-0.5b-q8",
+    "state": "ready",
+    "explanation": {
+      "pipeline_version": "placement-pipeline/1",
+      "model": {
+        "name": "qwen2.5-0.5b-q8",
+        "revision": "Qwen/Qwen2.5-0.5B-Instruct-GGUF@q8_0",
+        "class": "dense",
+        "layers": 24,
+        "weights_bytes": 380507256,
+        "synthetic": false
+      },
+      "policy": {
+        "backend_digest": "llama.cpp-v0.9.0",
+        "headroom_fraction": 0.1,
+        "active_sequences": 1,
+        "require_all": true,
+        "local_device": "none",
+        "backend_cost": {
+          "name": "llama.cpp-v0.9.0-rpc",
+          "first_remote_ms": 3.58,
+          "extra_remote_ms": 0.74,
+          "round_trips_per_token": 1.02,
+          "bytes_per_token_per_remote": 620000.0
+        },
+        "weights": {
+          "bandwidth": 0.4,
+          "latency": 0.3,
+          "power": 0.2,
+          "stability": 0.1
+        }
+      },
+      "filtered_out": [],
+      "scores": [
+        {
+          "device_id": "dev_585079d6f6928236",
+          "total": 0.9213,
+          "components": {
+            "bandwidth": 1.0,
+            "latency": 0.7375,
+            "power": 1.0,
+            "stability": 1.0
+          }
+        },
+        {
+          "device_id": "dev_6c9f939d2591321b",
+          "total": 0.7801,
+          "components": {
+            "bandwidth": 0.4706,
+            "latency": 0.9728,
+            "power": 1.0,
+            "stability": 1.0
+          }
+        },
+        {
+          "device_id": "dev_c2ddb1f6c3835b77",
+          "total": 0.6904,
+          "components": {
+            "bandwidth": 0.3542,
+            "latency": 0.8292,
+            "power": 1.0,
+            "stability": 1.0
+          }
+        }
+      ],
+      "single_device_fit": [
+        "dev_585079d6f6928236",
+        "dev_6c9f939d2591321b",
+        "dev_c2ddb1f6c3835b77"
+      ],
+      "feasible": true,
+      "stages": [
+        {
+          "device_id": "dev_c2ddb1f6c3835b77",
+          "name": "Linux server (env-colin)",
+          "layers": [
+            0,
+            1
+          ],
+          "holds_output_head": false,
+          "endpoint": "10.100.10.19:50100",
+          "bandwidth_gbps": 27.1,
+          "bandwidth_source": "reported",
+          "weights_bytes": 15854469,
+          "kv_bytes": 2097152,
+          "runtime_bytes": 67108864,
+          "headroom_bytes": 400000000,
+          "budget_bytes": 4000000000,
+          "margin_bytes": 3514939515,
+          "est_compute_ms": 0.59,
+          "rtt_ms": 5.68,
+          "rtt_source": "tunnel",
+          "link_mbps": null,
+          "est_network_ms": 5.79,
+          "transport": "mtls",
+          "rpc_endpoint": "127.0.0.1:57952",
+          "planned_rtt_ms": 10.3,
+          "rtt_measurement": {
+            "mean_ms": 5.68,
+            "median_ms": 5.47,
+            "min_ms": 3.08,
+            "p90_ms": 8.13,
+            "samples": 16
+          }
+        },
+        {
+          "device_id": "dev_6c9f939d2591321b",
+          "name": "Dev PC (Windows)",
+          "layers": [
+            1,
+            2
+          ],
+          "holds_output_head": false,
+          "endpoint": "127.0.0.1:50052",
+          "bandwidth_gbps": 36.0,
+          "bandwidth_source": "reported",
+          "weights_bytes": 15854469,
+          "kv_bytes": 2097152,
+          "runtime_bytes": 67108864,
+          "headroom_bytes": 400000000,
+          "budget_bytes": 4000000000,
+          "margin_bytes": 3514939515,
+          "est_compute_ms": 0.44,
+          "rtt_ms": 1.4,
+          "rtt_source": "heartbeat",
+          "link_mbps": null,
+          "est_network_ms": 1.43,
+          "transport": "plaintext"
+        },
+        {
+          "device_id": "dev_585079d6f6928236",
+          "name": "MacBook Pro (Metal)",
+          "layers": [
+            2,
+            24
+          ],
+          "holds_output_head": true,
+          "endpoint": "10.10.132.248:50100",
+          "bandwidth_gbps": 76.5,
+          "bandwidth_source": "reported",
+          "weights_bytes": 493438891,
+          "kv_bytes": 46137344,
+          "runtime_bytes": 67108864,
+          "headroom_bytes": 1200000000,
+          "budget_bytes": 12000000000,
+          "margin_bytes": 10193314901,
+          "est_compute_ms": 6.45,
+          "rtt_ms": 9.71,
+          "rtt_source": "tunnel",
+          "link_mbps": null,
+          "est_network_ms": 9.9,
+          "transport": "mtls",
+          "rpc_endpoint": "127.0.0.1:57955",
+          "planned_rtt_ms": 17.8,
+          "rtt_measurement": {
+            "mean_ms": 9.71,
+            "median_ms": 9.07,
+            "min_ms": 5.29,
+            "p90_ms": 14.84,
+            "samples": 16
+          }
+        }
+      ],
+      "reservation_bytes": {
+        "dev_c2ddb1f6c3835b77": 2097152,
+        "dev_6c9f939d2591321b": 2097152,
+        "dev_585079d6f6928236": 46137344
+      },
+      "latency_budget": {
+        "compute_ms": 7.48,
+        "network_ms": 17.12,
+        "backend_overhead_ms": 5.06,
+        "remote_stages": 3,
+        "per_token_ms": 29.66,
+        "tokens_per_s": 33.72,
+        "dominant_stage": "dev_585079d6f6928236",
+        "rtt_source": "heartbeat+tunnel",
+        "backend_cost": {
+          "name": "llama.cpp-v0.9.0-rpc",
+          "first_remote_ms": 3.58,
+          "extra_remote_ms": 0.74,
+          "round_trips_per_token": 1.02,
+          "bytes_per_token_per_remote": 620000.0
+        },
+        "basis": "weights/effective bandwidth + fitted backend overhead + round trips and per-token traffic per remote stage; link bandwidth term omitted where unmeasured"
+      },
+      "capacity_basis": "fits a single eligible device budget",
+      "planned_latency_budget": {
+        "compute_ms": 7.48,
+        "network_ms": 30.1,
+        "backend_overhead_ms": 5.06,
+        "remote_stages": 3,
+        "per_token_ms": 42.64,
+        "tokens_per_s": 23.45,
+        "dominant_stage": "dev_585079d6f6928236",
+        "rtt_source": "heartbeat",
+        "basis": "weights/effective bandwidth + fitted backend overhead + round trips and per-token traffic per remote stage; link bandwidth term omitted where unmeasured"
+      }
+    }
+  },
+  "summary": {
+    "requests": 10,
+    "completed": 10,
+    "median_elapsed_s": 2.463,
+    "median_tokens_per_s": 15.91,
+    "fit_ms_per_token": 51.86,
+    "fit_fixed_s": 0.402,
+    "predicted_ms_per_token": 29.66,
+    "rtt_source": "heartbeat+tunnel",
+    "prediction_error_pct": -42.8,
+    "within_30pct": false
+  },
+  "runs": [
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 4.085,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.437,
+      "completion_tokens": 12
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.677,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.643,
+      "completion_tokens": 20
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.875,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 0.815,
+      "completion_tokens": 12
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.283,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 1.238,
+      "completion_tokens": 20
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 3.684,
+      "completion_tokens": 64
+    },
+    {
+      "status": "completed",
+      "error_code": null,
+      "elapsed_s": 0.819,
+      "completion_tokens": 12
+    }
+  ]
+}

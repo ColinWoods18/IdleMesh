@@ -74,6 +74,17 @@ to other projects there.
 | Run | Machines | Ready after | Measured | Predicted | Drain checks |
 |---|---|---|---|---|---|
 | 2026-11-20 | Dev PC + Linux server | 13 s | 40.9 ms/token | 26.8 ms/token (−34.5%) | 4a–4f pass |
+| 2026-11-20 | Dev PC + Linux server + MacBook (Metal, head) | 32 s | 51.9 ms/token | 29.7 ms/token (−42.8%) | 4a–4f pass, Mac as the target |
 
-Results file: `experiments/llamacpp-feasibility/results/pilot-3machine-20261120T190618Z.json`. The MacBook joins
-for the three-machine run once it is awake.
+Results files: `experiments/llamacpp-feasibility/results/pilot-3machine-20261120T190618Z.json` and
+`pilot-3machine-20261120T212314Z.json`.
+
+Two lessons from the checks:
+
+- An agent sees a policy change at its next heartbeat. Wait for its `worker stopped` line before resuming.
+- Before `pilot deploy`, wait until `pilot devices` shows `worker=running` for every machine. A deployment
+  started earlier leaves out the machine that is still starting.
+
+On the Mac, the agent is built from a `git archive` copy of `main` in `~/idlemesh-main`. llama.cpp is built with
+the default Metal backend (`-DGGML_RPC=ON -DLLAMA_CURL=OFF -DLLAMA_USE_PREBUILT_UI=OFF`), and CMake comes from
+`uv tool install cmake`.

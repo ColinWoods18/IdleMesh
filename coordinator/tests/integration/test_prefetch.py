@@ -89,7 +89,10 @@ def test_unaccepted_license_fails_the_deployment(tmp_path, coordinator_source):
     cache, agents = tmp_path / "hp-cache", []
     with coordinator(tmp_path, rt) as (base, _):
         c, gid = owner_client(base)
-        with mac_heartbeat(c, base, bandwidth=5):
+        with mac_heartbeat(c, base, bandwidth=0.5):
+            # The HP must rank first so it holds the output head and prefetches it. Its capacity is weighted by
+            # its governor level (D-29), which drops to the 0.02 yield level while someone uses the dev PC
+            # (51 GB/s x 0.02 = 1.02), so the simulated Mac must be slower than that.
             try:
                 state = enroll_agent(c, base, tmp_path, "HP EliteBook", "hp-elitebook")
                 agents.append(start_agent(state, tmp_path / "hp.log", "--worker-port", str(free_port()),

@@ -15,6 +15,47 @@ and why.
 
 ---
 
+## 2026-11-27 — Sprint 5: network graph and clusterer v0
+
+Status: **on branch `sprint-5`.** Story-by-story status is in
+[Sprints.md](Sprints.md#sprint-5--network-probes-and-the-network-graph).
+
+### What changed
+
+| Story | Change |
+|---|---|
+| S5.4 | New coordinator package `graph/`. `network.py` combines measurements into links (for each direction, the newest value of each field; then the higher RTT and lower bandwidth of the two directions), applies the threshold rule, finds connected components and gives clusters stable IDs (a cluster keeps the ID most of its members had; larger clusters choose first). `service.py` recomputes clusters over enrolled, unrevoked devices every `clusters.recompute_every_s` and logs each node that changes cluster. Edges to the coordinator are stored but do not join nodes. |
+| S5.4 | Agents can upload `net_edge` telemetry records (`dst` = peer device ID or `coordinator`, `method`, RTT p50/p95, bandwidth, sample count). They are stored in `net_edges` under pseudonymous node keys, deduplicated on retry, pruned with the other telemetry, and need the owner's **diagnostics** consent. `NetEdge` added to the telemetry proto draft. |
+| S5.4 | `GET /api/v1/groups/{id}/network` (group administrators): devices with their cluster, measured links with `joins` (whether the link passes the threshold), and clusters. Node keys never leave the coordinator. |
+| S5.4 | Site config section `clusters` (`max_rtt_ms`, `min_mbps`, `max_age_h`, `recompute_every_s`). |
+
+Database schema version 5: `net_edges` and `node_clusters`. No new dependencies and no new error codes
+(a failed recompute is logged as `INTERNAL` and never stops the liveness monitor).
+
+### Decisions
+
+| ID | Decision | Why | Status |
+|---|---|---|---|
+| D-22 | **Clusterer v0 is plain Python, with first-guess thresholds.** Connected components use a small union-find, not networkx. A link joins two nodes when its median RTT is ≤ 5 ms and, once measured, its bandwidth is ≥ 100 Mbps; measurements older than 48 h are ignored. All four values are site settings. | Connected components need no graph library, and one less dependency suits the installers (D-07). networkx comes when a clusterer needs community detection. The thresholds are a guess for a campus LAN, to be tuned against the building layout in the S5 demo. | Proposed |
+
+### How it was verified
+
+- Unit tests (`test_graph.py`): direction combining, newest value per field, the threshold rule, components through
+  a third node, ID stability through joins, leaves, merges and splits, and recompute against the store (stale,
+  coordinator and revoked-node edges left out).
+- API tests (`test_network_graph.py`): uploads become clusters in the admin view, keys are pseudonymous, retries
+  are ignored, diagnostics consent is required, bad records are refused, and only admins see the view.
+- No real measurements yet: those come from the agent prober (S5.1).
+
+### Follow-ups
+
+- **Placement must check the head's own links.** With llama.cpp RPC the head talks to every worker
+  (hub and spoke), so a cluster can hold two nodes whose direct link is slow, joined through a third. S5.3
+  should use the head-to-worker link from `net_edges`, not cluster membership alone.
+- S5.5: Grafana edges and clusters view.
+
+---
+
 ## 2026-11-20 — Sprint 4: config enrollment, crash reports, diagnostics, OS limits, governor
 
 Status: **on branch `sprint-4` (PR #6, stacked on Sprint 3).** Story-by-story status is in

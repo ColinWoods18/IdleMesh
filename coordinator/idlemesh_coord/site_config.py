@@ -86,6 +86,14 @@ class Probes(_Strict):
     bandwidth_off_hours_only: bool = True
 
 
+class Clusters(_Strict):
+    """When nodes share a network cluster (S5.4, D-22)."""
+    max_rtt_ms: float = Field(5.0, gt=0, le=1000)
+    min_mbps: float = Field(100.0, ge=0)
+    max_age_h: float = Field(48, gt=0, le=24 * 30)
+    recompute_every_s: int = Field(300, ge=10, le=86_400)
+
+
 class Fleet(_Strict):
     min_active_nodes: int = Field(1, ge=0)
     max_active_nodes: int = Field(50, ge=1)
@@ -113,6 +121,7 @@ class SiteConfig(_Strict):
     idle: Idle = Idle()
     contribution: Contribution = Contribution()
     probes: Probes = Probes()
+    clusters: Clusters = Clusters()
     fleet: Fleet = Fleet()
     queue: Queue = Queue()
     # Directory of the file it was loaded from; relative paths (the log file) resolve against it.

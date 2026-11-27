@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from .. import obs, partition, telemetry
+from .. import graph, obs, partition, telemetry
 from ..catalog import CATALOG, MODEL_FILES
 from ..config import Settings
 from ..domain.access import Branch, ForkError, Principal, Role, Scope, Visibility, can_create_with_visibility, \
@@ -150,11 +150,23 @@ def _restore_deployments(app) -> None:
         c.execute("UPDATE deployments SET state = 'unavailable' WHERE state = 'ready'")
 
 
+def cluster_policy(settings: Settings) -> graph.ClusterPolicy:
+    return graph.ClusterPolicy(max_rtt_ms=settings.cluster_max_rtt_ms, min_mbps=settings.cluster_min_mbps)
+
+
+def recompute_clusters(app) -> dict:
+    """Recompute the network clusters over every enrolled, unrevoked device (S5.4)."""
+    store, settings, keys = app.state.store, app.state.settings, app.state.node_keys
+    nodes = [keys.key(r["id"]) for r in store.all("SELECT id FROM devices WHERE status != 'revoked'")]
+    return graph.recompute(store, nodes, cluster_policy(settings), settings.cluster_max_age_h)
+
+
 async def _liveness_monitor(app) -> None:
     """Stop using a deployment as soon as a required device misses heartbeats (FR 04, spec 10)."""
     store, sched, settings = app.state.store, app.state.scheduler, app.state.settings
     next_prune = 0.0
     next_error_flush = time.monotonic() + 60
+    next_clusters = time.monotonic() + 5
     while True:
         await asyncio.sleep(1)
         if time.monotonic() >= next_error_flush:  # the coordinator's own error counts, once a minute (S3.6)
@@ -164,6 +176,12 @@ async def _liveness_monitor(app) -> None:
                                         settings.org_id, settings.site_id)
             except Exception:  # noqa: BLE001 - never let metrics stop the liveness monitor
                 log.exception("cannot record error counts", extra={"error_code": "INTERNAL"})
+        if time.monotonic() >= next_clusters:  # network clusters (S5.4)
+            next_clusters = time.monotonic() + settings.cluster_every_s
+            try:
+                await run_in_threadpool(recompute_clusters, app)
+            except Exception:  # noqa: BLE001 - clustering must never stop the liveness monitor
+                log.exception("cannot recompute clusters", extra={"error_code": "INTERNAL"})
         if time.monotonic() >= next_prune:  # telemetry retention (S2.3), hourly
             next_prune = time.monotonic() + 3600
             try:
@@ -657,7 +675,8 @@ def register(app: FastAPI) -> None:
                                                            kinds & telemetry.IDLE_KINDS) else "idle-data collection")
             raise ApiError(403, "TELEMETRY_NO_CONSENT", f"The device owner has not consented to {what}.")
         node = request.app.state.node_keys.key(device_id)
-        return await run_in_threadpool(telemetry.ingest, S(request), node, body, settings.org_id, settings.site_id)
+        return await run_in_threadpool(telemetry.ingest, S(request), node, body, settings.org_id, settings.site_id,
+                                       request.app.state.node_keys.key)
 
     @app.get("/api/v1/groups/{group_id}/devices/{device_id}/idle", tags=["devices"])
     async def idle_timeline(group_id: str, device_id: str, request: Request, hours: float = 24,
@@ -671,6 +690,18 @@ def register(app: FastAPI) -> None:
         node = request.app.state.node_keys.key(device_id)
         out = telemetry.timeline(S(request), node, now() - timedelta(hours=hours))
         return {"device_id": device_id, "name": d["name"], "hours": hours, **out}
+
+    @app.get("/api/v1/groups/{group_id}/network", tags=["devices"])
+    async def network(group_id: str, request: Request, p: Principal = Depends(current)):
+        """The network graph of the group's devices: measured links, whether each link is fast enough to
+        join a cluster, and each device's cluster (S5.4). Group administrators only."""
+        require_group(p, group_id)
+        require_admin(p)
+        keys = request.app.state.node_keys
+        devices = {keys.key(r["id"]): {"device_id": r["id"], "name": r["name"]} for r in S(request).all(
+            "SELECT id, name FROM devices WHERE group_id = ? AND status != 'revoked'", (group_id,))}
+        return await run_in_threadpool(graph.network_view, S(request), devices, cluster_policy(settings),
+                                       settings.cluster_max_age_h)
 
     @app.get("/api/v1/devices/{device_id}/model-file", tags=["devices"])
     async def model_file(device_id: str, request: Request):

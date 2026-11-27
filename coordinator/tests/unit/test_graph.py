@@ -1,0 +1,99 @@
+"""Clusterer v0: links from measurements, the threshold rule, components and stable IDs (S5.4)."""
+from datetime import timedelta
+
+from idlemesh_coord import graph
+from idlemesh_coord.graph import ClusterPolicy, Link, Measurement, assign_ids, close_enough, combine, components
+from idlemesh_coord.store import Store, iso, now
+
+POLICY = ClusterPolicy(max_rtt_ms=5.0, min_mbps=100.0)
+
+
+def m(src, dst, rtt=None, bw=None, ts="2026-11-27T10:00:00+00:00"):
+    return Measurement(src, dst, ts, rtt, None if rtt is None else rtt * 1.5, bw)
+
+
+def link(a, b, rtt, bw=None):
+    return Link(a, b, rtt, rtt, bw, "t")
+
+
+def test_both_directions_combine_to_the_worse_value():
+    links = combine([m("b", "a", rtt=1.0, bw=900), m("a", "b", rtt=3.0, bw=400)])
+    assert list(links) == [("a", "b")]
+    ab = links[("a", "b")]
+    assert (ab.rtt_ms_p50, ab.bandwidth_mbps) == (3.0, 400)
+
+
+def test_the_newest_value_of_each_field_wins_and_older_fields_are_kept():
+    links = combine([m("a", "b", rtt=9.0, ts="2026-11-27T09:00:00+00:00"),
+                     m("a", "b", bw=500, ts="2026-11-27T09:30:00+00:00"),
+                     m("a", "b", rtt=2.0, ts="2026-11-27T10:00:00+00:00")])
+    ab = links[("a", "b")]
+    assert (ab.rtt_ms_p50, ab.bandwidth_mbps, ab.measured_at) == (2.0, 500, "2026-11-27T10:00:00+00:00")
+
+
+def test_self_measurements_are_ignored():
+    assert combine([m("a", "a", rtt=0.1)]) == {}
+
+
+def test_the_threshold_needs_a_known_low_rtt_and_enough_bandwidth_when_known():
+    assert close_enough(link("a", "b", 4.9), POLICY)
+    assert close_enough(link("a", "b", 5.0, bw=100), POLICY)
+    assert not close_enough(link("a", "b", 5.1), POLICY)
+    assert not close_enough(link("a", "b", 1.0, bw=50), POLICY)
+    assert not close_enough(Link("a", "b", None, None, 900, "t"), POLICY)  # bandwidth alone never joins
+
+
+def test_components_join_through_a_third_node_and_keep_lonely_nodes_apart():
+    links = [link("a", "b", 1), link("b", "c", 2), link("c", "d", 40), link("e", "f", 0.5)]
+    got = components(["a", "b", "c", "d", "e", "f", "g"], links, POLICY)
+    assert got == [frozenset("abc"), frozenset("ef"), frozenset("d"), frozenset("g")]
+
+
+def test_a_slow_link_alone_does_not_join():
+    assert components(["x", "y"], [link("x", "y", 1, bw=10)], POLICY) == [frozenset("x"), frozenset("y")]
+
+
+def test_cluster_ids_survive_a_node_joining_or_leaving():
+    first = assign_ids([frozenset("abc"), frozenset("de")], {})
+    assert first["a"] == first["b"] == first["c"] != first["d"] == first["e"]
+    # f joins the first cluster, c leaves for one of its own.
+    second = assign_ids([frozenset("abf"), frozenset("de"), frozenset("c")], first)
+    assert second["a"] == second["f"] == first["a"]
+    assert second["d"] == first["d"]
+    assert second["c"] not in {first["a"], first["d"]}
+
+
+def test_when_two_clusters_merge_the_bigger_one_keeps_its_id_and_ids_stay_unique():
+    first = assign_ids([frozenset("abc"), frozenset("de")], {})
+    merged = assign_ids([frozenset("abcde")], first)
+    assert set(merged.values()) == {first["a"]}
+    # Split again: the larger part keeps the ID, the other gets a fresh one rather than a duplicate.
+    split = assign_ids([frozenset("abc"), frozenset("de")], merged)
+    assert split["a"] == first["a"] and split["d"] != split["a"]
+
+
+def test_new_ids_are_deterministic():
+    assert assign_ids([frozenset("ab")], {}) == assign_ids([frozenset("ab")], {})
+
+
+def _edge(store, src, dst, rtt, hours_ago=0.0, bw=None):
+    with store.tx() as c:
+        c.execute("INSERT INTO net_edges (src, dst, ts, method, rtt_ms_p50, rtt_ms_p95, bandwidth_mbps, received_at)"
+                  " VALUES (?,?,?,?,?,?,?,?)",
+                  (src, dst, iso(now() - timedelta(hours=hours_ago)), "tunnel", rtt, rtt, bw, iso(now())))
+
+
+def test_recompute_stores_clusters_ignores_stale_coordinator_and_unknown_edges(tmp_path):
+    store = Store(str(tmp_path / "db.sqlite3"))
+    _edge(store, "a", "b", 1.0)
+    _edge(store, "b", "c", 2.0, hours_ago=100)      # too old
+    _edge(store, "c", "coordinator", 0.3)           # to the coordinator: not a node-to-node link
+    _edge(store, "c", "gone", 0.3)                  # a node that is no longer enrolled
+    out = graph.recompute(store, ["a", "b", "c"], POLICY, max_age_h=48)
+    assert out == {"nodes": 3, "clusters": 2, "links": 1, "changed": 3, "removed": 0}
+    rows = {r["node"]: r["cluster_id"] for r in store.all("SELECT * FROM node_clusters")}
+    assert rows["a"] == rows["b"] != rows["c"]
+    # Nothing changed: nothing is rewritten. A node that leaves the fleet loses its row.
+    assert graph.recompute(store, ["a", "b", "c"], POLICY, 48)["changed"] == 0
+    out = graph.recompute(store, ["a", "b"], POLICY, 48)
+    assert out["removed"] == 1 and {r["node"] for r in store.all("SELECT node FROM node_clusters")} == {"a", "b"}

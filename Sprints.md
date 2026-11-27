@@ -225,6 +225,12 @@ we can find out why without visiting it.
 
 **Demo:** the cluster map compared with the real building layout.
 
+**Status** (details in [changes.md](changes.md), "Sprint 5"):
+
+| ID | Status |
+|---|---|
+| S5.4 | ✅ `graph/` package: links from measurements (the worse direction counts), threshold rule (median RTT ≤ 5 ms, and ≥ 100 Mbps once bandwidth is measured), connected components, cluster IDs that survive a node joining or leaving. Recomputed every 5 minutes; changes logged. `net_edge` telemetry records and the admin `GET .../network` view. No networkx yet (D-22). Unit and API tests; real measurements wait for S5.1 |
+
 ## Sprint 6 · Availability predictor; Phase 1 exit
 
 **Goal:** placement prefers nodes likely to stay idle; Phase 1 exit criteria met.

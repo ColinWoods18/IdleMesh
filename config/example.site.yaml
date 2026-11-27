@@ -50,6 +50,12 @@ probes:                             # (planned, S5)
   bandwidth_every_h: 24
   bandwidth_off_hours_only: true
 
+clusters:                           # applies now (S5.4): which nodes share a network cluster
+  max_rtt_ms: 5.0                   # median RTT at or below this joins two nodes
+  min_mbps: 100                     # and bandwidth at or above this, once it is measured (S5.2)
+  max_age_h: 48                     # measurements older than this are ignored
+  recompute_every_s: 300
+
 fleet:                              # (planned, S8.9, D-12)
   min_active_nodes: 1
   max_active_nodes: 50

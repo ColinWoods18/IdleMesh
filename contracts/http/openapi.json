@@ -1221,6 +1221,97 @@
         "title": "MessageIn",
         "type": "object"
       },
+      "NetEdgeRecord": {
+        "additionalProperties": false,
+        "description": "One network measurement from this node to a peer node or to the coordinator (S5.1, S5.2; PROJECT_PLAN\n\u00a76 NetEdge). `dst` is the peer's device ID, or \"coordinator\". The RTT probe and the bandwidth test run on\ndifferent schedules, so a record carries the RTT pair, the bandwidth, or both.",
+        "properties": {
+          "bandwidth_mbps": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bandwidth Mbps"
+          },
+          "dst": {
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "title": "Dst",
+            "type": "string"
+          },
+          "kind": {
+            "const": "net_edge",
+            "title": "Kind",
+            "type": "string"
+          },
+          "method": {
+            "enum": [
+              "tcp",
+              "tunnel",
+              "tunnel_bulk",
+              "iperf3_lab"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "rtt_ms_p50": {
+            "anyOf": [
+              {
+                "maximum": 60000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rtt Ms P50"
+          },
+          "rtt_ms_p95": {
+            "anyOf": [
+              {
+                "maximum": 60000.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rtt Ms P95"
+          },
+          "samples": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Samples"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "ts",
+          "dst",
+          "method"
+        ],
+        "title": "NetEdgeRecord",
+        "type": "object"
+      },
       "Policy": {
         "additionalProperties": false,
         "properties": {
@@ -1652,6 +1743,7 @@
                   "health": "#/components/schemas/HealthRecord",
                   "idle": "#/components/schemas/IdleRecord",
                   "lid": "#/components/schemas/LidRecord",
+                  "net_edge": "#/components/schemas/NetEdgeRecord",
                   "state": "#/components/schemas/StateRecord"
                 },
                 "propertyName": "kind"
@@ -1671,6 +1763,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/ErrorsRecord"
+                },
+                {
+                  "$ref": "#/components/schemas/NetEdgeRecord"
                 }
               ]
             },
@@ -3296,6 +3391,47 @@
         "summary": "Remove Member",
         "tags": [
           "groups"
+        ]
+      }
+    },
+    "/api/v1/groups/{group_id}/network": {
+      "get": {
+        "description": "The network graph of the group's devices: measured links, whether each link is fast enough to\njoin a cluster, and each device's cluster (S5.4). Group administrators only.",
+        "operationId": "network_api_v1_groups__group_id__network_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Network",
+        "tags": [
+          "devices"
         ]
       }
     },

@@ -670,6 +670,13 @@ def register(app: FastAPI) -> None:
         with S(request).tx() as c:
             c.execute("UPDATE devices SET capabilities = ?, policy = ?, last_seen = ?, consent = ? WHERE id = ?",
                       (json.dumps(caps), json.dumps(policy), iso(now()), consent, device_id))
+        if telemetry.has_consent(json.loads(consent) if consent else None, {"net_edge"}):
+            # The node's network and RTT to this coordinator (S5.1): diagnostics, recorded only on change.
+            await run_in_threadpool(
+                graph.observe, S(request), request.app.state.node_keys.key(device_id),
+                body.capabilities.network.subnet if body.capabilities.network else None, body.capabilities.rtt_ms,
+                graph.RttRule(refresh_h=settings.rtt_refresh_h, change_frac=settings.rtt_change_pct / 100),
+                settings.org_id, settings.site_id)
         g = request.app.state.scheduler.group(d["group_id"])
         stage = next((s for s in (g.placement or {}).get("stages", []) if s["device_id"] == device_id), None)
         public_policy = {k: v for k, v in policy.items() if k != "reported_paused"}

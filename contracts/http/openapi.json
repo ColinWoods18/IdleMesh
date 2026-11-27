@@ -65,6 +65,16 @@
             "title": "Mem Bandwidth Gbps",
             "type": "number"
           },
+          "network": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NetworkId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "os": {
             "maxLength": 40,
             "title": "Os",
@@ -1310,6 +1320,22 @@
           "method"
         ],
         "title": "NetEdgeRecord",
+        "type": "object"
+      },
+      "NetworkId": {
+        "additionalProperties": false,
+        "description": "The subnet of the interface the node uses to reach this coordinator (S5.1). Never the host address.",
+        "properties": {
+          "subnet": {
+            "maxLength": 49,
+            "title": "Subnet",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subnet"
+        ],
+        "title": "NetworkId",
         "type": "object"
       },
       "Policy": {

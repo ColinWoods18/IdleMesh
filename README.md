@@ -31,14 +31,16 @@ The inherited DIFA prototype, restructured and renamed, plus the sprint 1 founda
 - **macOS and Linux idle, hardware profiler, node health and Grafana (Sprint 3).**
 - **Operations (Sprint 4):** enrollment from a node config file, crash reports, remote diagnostic
   bundles, a timed remote log level, OS memory limits for the worker, and contribution governor v0 (D-12).
-- **Network clusters (Sprint 5, in progress):** the coordinator stores network measurements from nodes
-  and groups nodes into clusters by RTT and bandwidth (`GET /api/v1/groups/{id}/network`). The agent's
-  probes that send those measurements come next (S5.1, S5.2).
+- **Network clusters (Sprint 5, in progress):** agents report their subnet, the coordinator records each
+  node's RTT to it when it changes, and nodes on one subnet are grouped into clusters by RTT and, later,
+  bandwidth (`GET /api/v1/groups/{id}/network`). One coordinator per network is the target (D-24).
+- **Decode probe on every worker (S5.6):** each worker times real decoding with llama-bench, using a
+  reference model it fetches from the coordinator once.
 - A llama.cpp RPC adapter. It was tested across macOS (Metal), Windows (CPU) and Linux (CPU), most
   recently on all three at once ([results](experiments/llamacpp-feasibility/results/phase1-findings.md)).
 
-Not built yet: the agent's network probes, the availability predictor, Ollama endpoints, SSO, the web
-chat UI, installers, and gRPC. See the plan and [Sprints.md](Sprints.md).
+Not built yet: the bandwidth test and peer probes, coordinator federation, the availability predictor,
+Ollama endpoints, SSO, the web chat UI, installers, and gRPC. See the plan and [Sprints.md](Sprints.md).
 
 > **llama.cpp RPC is research-grade.** It has no authentication or encryption. Workers must stay on
 > loopback behind the agent's mTLS tunnel (`--tunnel-listen`), and the agent refuses to expose a

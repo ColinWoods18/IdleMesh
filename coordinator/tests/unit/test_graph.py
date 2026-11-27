@@ -83,11 +83,18 @@ def _edge(store, src, dst, rtt, hours_ago=0.0, bw=None):
                   (src, dst, iso(now() - timedelta(hours=hours_ago)), "tunnel", rtt, rtt, bw, iso(now())))
 
 
+def _subnet(store, node, subnet):
+    with store.tx() as c:
+        c.execute("INSERT INTO node_networks (node, subnet, since) VALUES (?,?,?)", (node, subnet, iso(now())))
+
+
 def test_recompute_stores_clusters_ignores_stale_coordinator_and_unknown_edges(tmp_path):
     store = Store(str(tmp_path / "db.sqlite3"))
+    for n in "abc":
+        _subnet(store, n, "10.1.0.0/24")
     _edge(store, "a", "b", 1.0)
     _edge(store, "b", "c", 2.0, hours_ago=100)      # too old
-    _edge(store, "c", "coordinator", 0.3)           # to the coordinator: not a node-to-node link
+    _edge(store, "c", "coordinator", 9.0)           # c is slow to the coordinator: no relayed link joins it
     _edge(store, "c", "gone", 0.3)                  # a node that is no longer enrolled
     out = graph.recompute(store, ["a", "b", "c"], POLICY, max_age_h=48)
     assert out == {"nodes": 3, "clusters": 2, "links": 1, "changed": 3, "removed": 0}
@@ -105,3 +112,54 @@ def test_the_graph_keeps_every_measured_link_and_marks_which_ones_join():
     assert set(g.nodes) == {"a", "b", "c"}
     assert g.edges["a", "b"]["joins"] is True and g.edges["b", "c"]["joins"] is False
     assert g.edges["b", "c"]["rtt_ms_p50"] == 40
+
+
+NETS = {"a": "10.1.0.0/24", "b": "10.1.0.0/24", "c": "10.1.0.0/24", "x": "10.2.0.0/24"}
+
+
+def test_relayed_links_cover_same_subnet_pairs_without_a_direct_measurement():
+    coord = {"a": (0.4, "t1"), "b": (0.5, "t2"), "c": (0.3, "t3"), "x": (0.2, "t4"), "nosubnet": (0.1, "t5")}
+    got = {(link.a, link.b): link for link in graph.relayed(coord, NETS, measured=[("a", "c")])}
+    assert set(got) == {("a", "b"), ("b", "c")}  # a-c has a real figure; x and nosubnet have no same-subnet peer
+    ab = got[("a", "b")]
+    assert (ab.rtt_ms_p50, ab.source, ab.measured_at) == (0.9, "relayed", "t2")
+
+
+def test_clusters_never_span_subnets_and_need_a_known_subnet():
+    links = [link("a", "b", 1), link("b", "x", 0.5), link("c", "n", 0.5)]
+    got = components(["a", "b", "c", "x", "n"], links, POLICY, NETS)
+    assert got == [frozenset("ab"), frozenset("c"), frozenset("n"), frozenset("x")]
+
+
+def test_relayed_estimates_cluster_a_subnet_and_a_slow_node_stays_out(tmp_path):
+    store = Store(str(tmp_path / "db.sqlite3"))
+    for n, net in NETS.items():
+        _subnet(store, n, net)
+    for n, rtt in (("a", 0.6), ("b", 0.8), ("c", 7.0), ("x", 0.4)):
+        _edge(store, n, "coordinator", rtt)
+    assert graph.recompute(store, list(NETS), POLICY, 48)["clusters"] == 3  # {a, b}, {c}, {x}
+    rows = {r["node"]: r["cluster_id"] for r in store.all("SELECT * FROM node_clusters")}
+    assert rows["a"] == rows["b"] and len({rows["a"], rows["c"], rows["x"]}) == 3
+
+
+def test_heartbeats_record_rtt_only_when_something_changed(tmp_path):
+    store = Store(str(tmp_path / "db.sqlite3"))
+    rule = graph.RttRule(refresh_h=24, change_frac=0.5, change_ms=1.0)
+
+    def beat(subnet, rtt):
+        return graph.observe(store, "a", subnet, rtt, rule, None, None)
+
+    assert beat("10.1.0.0/24", 0.0) == {"network_changed": True, "rtt_recorded": False}  # no round trip yet
+    assert beat("10.1.0.0/24", 2.0)["rtt_recorded"]          # the first figure
+    assert not beat("10.1.0.0/24", 2.8)["rtt_recorded"]      # within max(1 ms, 50%)
+    assert beat("10.1.0.0/24", 3.5)["rtt_recorded"]          # 1.5 ms more than the last row: a change
+    out = beat("10.9.0.0/16", 3.5)                           # moved to another network: recorded at once
+    assert out == {"network_changed": True, "rtt_recorded": True}
+    assert not beat(None, 3.5)["network_changed"]            # an unknown subnet keeps the last known one
+    assert store.one("SELECT subnet FROM node_networks WHERE node = 'a'")["subnet"] == "10.9.0.0/16"
+    # After the refresh interval a steady figure is recorded again.
+    with store.tx() as c:
+        for i, r in enumerate(c.execute("SELECT rowid FROM net_edges").fetchall()):
+            c.execute("UPDATE net_edges SET ts = ? WHERE rowid = ?", (iso(now() - timedelta(hours=26 - i)), r[0]))
+    assert beat("10.9.0.0/16", 3.5)["rtt_recorded"]
+    assert len(store.all("SELECT * FROM net_edges")) == 4

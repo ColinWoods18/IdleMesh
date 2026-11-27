@@ -12,6 +12,7 @@ mod hardware;
 mod health;
 mod idle;
 mod logging;
+mod netid;
 mod node_config;
 mod node_state;
 mod policy;
@@ -533,6 +534,11 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
                   h.gpus.iter().map(|g| g.name.clone()).collect::<Vec<_>>().join(", ") },
               h.backends.join(", "));
     }
+    // Network identity (S5.1): rechecked every minute, so moving to another network is noticed. Not for a
+    // simulated node, which stands in for another machine.
+    let mut subnet = if st.simulate.is_none() { netid::subnet_towards(&st.coordinator) } else { None };
+    let mut next_subnet_check = Instant::now() + Duration::from_secs(60);
+    info!(subnet = subnet.as_deref().unwrap_or("unknown"), "network: {}", subnet.as_deref().unwrap_or("unknown"));
     let mut health = health::Sampler::new(hw.as_ref().is_some_and(|h| h.backends.contains(&"cuda")));
     // Idle monitoring and telemetry (S2.1 to S2.6): idle data needs the owner's idle-data consent; health
     // samples and error counts (S3.5) need diagnostics consent. The buffer exists if either was given.
@@ -676,7 +682,19 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
             // momentary yield: memory is given back at handoff, not the moment a user touches the mouse (D-12).
             let ceiling = gov.current.map_or(1.0, |l| l.ceiling);
             let budget = (effective.memory_cap_bytes as f64 * ceiling) as u64;
+            if st.simulate.is_none() && Instant::now() >= next_subnet_check {
+                next_subnet_check = Instant::now() + Duration::from_secs(60);
+                let now_subnet = netid::subnet_towards(&st.coordinator);
+                if now_subnet != subnet {
+                    info!(subnet = now_subnet.as_deref().unwrap_or("unknown"), "network changed: {} -> {}",
+                          subnet.as_deref().unwrap_or("unknown"), now_subnet.as_deref().unwrap_or("unknown"));
+                    subnet = now_subnet;
+                }
+            }
             let mut caps = capabilities(&p, budget, rtt, &st.backend_digest, hw.as_ref());
+            if let Some(s) = &subnet {
+                caps["network"] = json!({"subnet": s});
+            }
             // Benchmark only when the governor would let the node contribute and no deployment is assigned
             // (D-12). The governor, not the node state, decides: a headless server reports "active" forever.
             prober.set_quiet(!paused && assignment.is_none() && gov.current.is_some_and(

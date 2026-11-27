@@ -229,6 +229,7 @@ we can find out why without visiting it.
 
 | ID | Status |
 |---|---|
+| S5.1 | ✅ Coordinator-relayed (D-25): agents report their subnet; the coordinator stores each node's heartbeat RTT to itself only on change or daily; same-subnet pairs get relayed links; clusters never span subnets (D-24). Unit and API tests; the agent's subnet checked on the dev PC. Peer probes (event-driven, off by default) follow once two reachable machines are available |
 | S5.4 | ✅ `graph/` package: links from measurements (the worse direction counts), threshold rule (median RTT ≤ 5 ms, and ≥ 100 Mbps once bandwidth is measured), connected components, cluster IDs that survive a node joining or leaving. Recomputed every 5 minutes; changes logged. `net_edge` telemetry records and the admin `GET .../network` view. networkx graph (D-22). Unit and API tests; real measurements wait for S5.1 |
 | S5.6 | 🔧 Every worker probes by default: llama-bench beside the worker, the reference model offered by the coordinator and verified by SHA-256, the benchmark only while the governor allows contribution (D-23). Live-tested on the dev PC. **Acceptance waits on S5.2 + S5.3:** the probe fixes the two-machine run (−34.5% → about −26%) but not the three-machine one, whose gap is the unmeasured link traffic |
 
@@ -278,6 +279,7 @@ OpenAI-compatible endpoints, and every request leaves a performance record.
 | S8.1 | Scale the fair queue: configurable limits, per-user quotas and rate limits, `-np` slots as capacity | Load test with simulated users stays fair |
 | S8.2 | **Yield, don't leave (C2, D-12):** user activity → governor at the minimal level within about 1 s → `yielding` → no new work → the coordinator chooses between finishing slowly and re-running elsewhere (by estimated time) → handoff, then memory release. The memory-pressure kill is the backstop. | A student touching a busy node sees no lag; the in-flight reply completes; yield and handoff timings measured |
 | S8.9 | **Fleet scaling (D-12):** minimum and maximum active nodes, scaled with queue demand and time windows, with warm standbys | Overnight scale-up and an idle-queue scale-down observed; active node-hours tracked |
+| S8.10 | **Federation (D-24):** one coordinator per network; coordinators find each other, forward work to another network's cluster when theirs is busy or too small, and return the result when that work has finished. Design first: discovery and trust between coordinators, which queue a student's request belongs to, and what is shared (capacity summaries, not node details) | Two coordinators on two networks: a request entering one is served by the other's cluster and the reply comes back through the first |
 | S8.3 | Recovery: re-run on another replica, continuing from streamed text | A scripted kill mid-reply completes elsewhere |
 | S8.4 | Standby deployment for split models; prefetch speeds up the reload | Recovery time measured |
 | S8.5 | **Recovery and drain metrics:** departures by type, recovery time, lost tokens, re-runs | These double as the E2 baseline dataset |

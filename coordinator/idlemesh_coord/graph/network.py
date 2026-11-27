@@ -1,11 +1,13 @@
-"""Clusterer v0 (S5.4): a threshold graph on RTT and bandwidth, split into connected components.
+"""Clusterer v0 (S5.4, S5.1): a threshold graph on RTT and bandwidth, split into connected components.
 
-Nodes are joined by a link when the measured path between them is fast enough to split a model across
-(`ClusterPolicy`). A cluster is a connected component of those links, so two nodes can share a cluster
-through a third. A node with no fast link is a cluster of its own.
+A cluster never spans networks (D-24): two nodes can join only when both report the same subnet. Within a
+subnet they join when the path between them is fast enough to split a model across (`ClusterPolicy`). A
+cluster is a connected component of those links, so two nodes can share a cluster through a third. A node
+with no fast link, or no known subnet, is a cluster of its own.
 
-Only node-to-node measurements count. A node's path to the coordinator says nothing about its path to
-another node, so those edges are stored (S5.1) but left out here.
+A link is either measured node to node (peer probes, later) or relayed: estimated from each node's RTT to
+its own network's coordinator (S5.1). The relayed figure is an upper bound on the direct path, and it is
+used only when the pair has no direct measurement.
 
 The graph is a networkx graph (PROJECT_PLAN), so a later clusterer can swap connected components for
 community detection without changing how the graph is built.
@@ -39,6 +41,7 @@ class Link:
     rtt_ms_p95: float | None
     bandwidth_mbps: float | None
     measured_at: str
+    source: str = "measured"  # or "relayed": the sum of both nodes' RTT to the coordinator
 
 
 @dataclass(frozen=True)
@@ -82,22 +85,54 @@ def close_enough(link: Link, policy: ClusterPolicy) -> bool:
     return link.bandwidth_mbps is None or link.bandwidth_mbps >= policy.min_mbps
 
 
-def build(nodes: Iterable[str], links: Iterable[Link], policy: ClusterPolicy) -> nx.Graph:
-    """The network graph: every node, and every measured link as an edge carrying its figures and `joins`
-    (whether it passes `policy`). Nodes a link names are added even when `nodes` leaves them out."""
+def relayed(coordinator_rtt: dict[str, tuple[float, str]], subnets: dict[str, str],
+            measured: Iterable[tuple[str, str]] = ()) -> list[Link]:
+    """Estimated links between nodes of the same subnet, from each node's (rtt_ms, ts) to the coordinator.
+    Pairs in `measured` (sorted pairs with a direct measurement) are skipped: a real figure always wins."""
+    skip = set(measured)
+    by_subnet: dict[str, list[str]] = {}
+    for n in sorted(coordinator_rtt):
+        if n in subnets:
+            by_subnet.setdefault(subnets[n], []).append(n)
+    out = []
+    for members in by_subnet.values():
+        for i, a in enumerate(members):
+            for b in members[i + 1:]:
+                if (a, b) in skip:
+                    continue
+                (ra, ta), (rb, tb) = coordinator_rtt[a], coordinator_rtt[b]
+                rtt = round(ra + rb, 3)
+                out.append(Link(a, b, rtt, rtt, None, max(ta, tb), source="relayed"))
+    return out
+
+
+def joins(link: Link, policy: ClusterPolicy, subnets: dict[str, str] | None = None) -> bool:
+    """Whether a link joins its two nodes: it passes `policy` and, when `subnets` is given, both nodes report
+    the same subnet (D-24)."""
+    if subnets is not None and (subnets.get(link.a) is None or subnets.get(link.a) != subnets.get(link.b)):
+        return False
+    return close_enough(link, policy)
+
+
+def build(nodes: Iterable[str], links: Iterable[Link], policy: ClusterPolicy,
+          subnets: dict[str, str] | None = None) -> nx.Graph:
+    """The network graph: every node (with its subnet), and every link as an edge carrying its figures, its
+    source and `joins`. Nodes a link names are added even when `nodes` leaves them out."""
     g = nx.Graph()
-    g.add_nodes_from(nodes)
+    for n in nodes:
+        g.add_node(n, subnet=(subnets or {}).get(n))
     for link in links:
         g.add_edge(link.a, link.b, rtt_ms_p50=link.rtt_ms_p50, rtt_ms_p95=link.rtt_ms_p95,
-                   bandwidth_mbps=link.bandwidth_mbps, measured_at=link.measured_at,
-                   joins=close_enough(link, policy))
+                   bandwidth_mbps=link.bandwidth_mbps, measured_at=link.measured_at, source=link.source,
+                   joins=joins(link, policy, subnets))
     return g
 
 
-def components(nodes: Iterable[str], links: Iterable[Link], policy: ClusterPolicy) -> list[frozenset[str]]:
-    """Connected components of the links that pass `policy`, over `nodes` plus any node a link names.
+def components(nodes: Iterable[str], links: Iterable[Link], policy: ClusterPolicy,
+               subnets: dict[str, str] | None = None) -> list[frozenset[str]]:
+    """Connected components of the links that join (see `joins`), over `nodes` plus any node a link names.
     Largest first, then by the smallest member, so the order is stable."""
-    g = build(nodes, links, policy)
+    g = build(nodes, links, policy, subnets)
     joined = nx.subgraph_view(g, filter_edge=lambda a, b: g.edges[a, b]["joins"])
     return sorted((frozenset(c) for c in nx.connected_components(joined)), key=lambda c: (-len(c), min(c)))
 

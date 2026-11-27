@@ -1,7 +1,8 @@
 """Request and response schemas. Unknown fields are rejected (spec 9.2)."""
+import ipaddress
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from ..domain.access import Visibility
 
@@ -104,6 +105,20 @@ class Hardware(Strict):
     idle_source: Literal["win32", "iokit", "logind", "tty", "none"] = "none"
 
 
+def _subnet(v: str) -> str:
+    try:
+        if "/" not in v:
+            raise ValueError
+        return str(ipaddress.ip_network(v, strict=True))
+    except ValueError as e:
+        raise ValueError("subnet must be a network address with a prefix, such as 10.1.2.0/24") from e
+
+
+class NetworkId(Strict):
+    """The subnet of the interface the node uses to reach this coordinator (S5.1). Never the host address."""
+    subnet: Annotated[str, Field(max_length=49), AfterValidator(_subnet)]
+
+
 class Capabilities(Strict):
     os: str = Field(max_length=40)
     arch: str = Field(max_length=40)
@@ -116,6 +131,7 @@ class Capabilities(Strict):
     battery_pct: float | None = Field(default=None, ge=0, le=100)
     decode_probe: DecodeProbe | None = None
     hardware: Hardware | None = None  # absent from simulated nodes and agents older than S3.3
+    network: NetworkId | None = None  # absent from simulated nodes and agents older than S5.1
 
 
 class Policy(Strict):

@@ -65,10 +65,13 @@ class Settings:
     yield_level: float = 0.02
     max_cpu_fraction: float = 0.75
     contribution_windows: list = field(default_factory=list)  # [{"name", "days", "start", "end", "max_level"}]
+    # Network figures from heartbeats (S5.1; site config section `probes`).
+    rtt_refresh_h: float = 24
+    rtt_change_pct: float = 50
     # Network clusters (S5.4; site config section `clusters`).
     cluster_max_rtt_ms: float = 5.0
     cluster_min_mbps: float = 100.0
-    cluster_max_age_h: float = 48
+    cluster_max_age_h: float = 72
     cluster_every_s: int = 300
 
     @classmethod
@@ -84,5 +87,6 @@ class Settings:
                       "max_cpu_fraction": site.contribution.max_cpu_fraction,
                       "contribution_windows": [w.model_dump() for w in site.contribution.windows],
                       "cluster_max_rtt_ms": site.clusters.max_rtt_ms, "cluster_min_mbps": site.clusters.min_mbps,
+                      "rtt_refresh_h": site.probes.rtt_refresh_h, "rtt_change_pct": site.probes.rtt_change_pct,
                       "cluster_max_age_h": site.clusters.max_age_h, "cluster_every_s": site.clusters.recompute_every_s,
                       **overrides})

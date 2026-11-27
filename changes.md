@@ -15,7 +15,7 @@ and why.
 
 ---
 
-## 2026-11-27 — Sprint 5: network graph and clusterer v0
+## 2026-11-27 — Sprint 5: network graph, clusters by subnet, decode probe on every worker
 
 Status: **on branch `sprint-5`.** Story-by-story status is in
 [Sprints.md](Sprints.md#sprint-5--network-probes-and-the-network-graph).
@@ -28,6 +28,9 @@ Status: **on branch `sprint-5`.** Story-by-story status is in
 | S5.4 | Agents can upload `net_edge` telemetry records (`dst` = peer device ID or `coordinator`, `method`, RTT p50/p95, bandwidth, sample count). They are stored in `net_edges` under pseudonymous node keys, deduplicated on retry, pruned with the other telemetry, and need the owner's **diagnostics** consent. `NetEdge` added to the telemetry proto draft. |
 | S5.4 | `GET /api/v1/groups/{id}/network` (group administrators): devices with their cluster, measured links with `joins` (whether the link passes the threshold), and clusters. Node keys never leave the coordinator. |
 | S5.4 | Site config section `clusters` (`max_rtt_ms`, `min_mbps`, `max_age_h`, `recompute_every_s`). |
+| S5.1 | The agent reports `network.subnet` in its capabilities: the network address and prefix of the interface it uses to reach the coordinator (never its own address), rechecked every minute and logged when it changes. The coordinator records the subnet in `node_networks` and the heartbeat-timed RTT to itself in `net_edges` (method `heartbeat`), **only on change**: the first figure, a new subnet, a change of more than 50% and 1 ms, or the daily refresh (`probes.rtt_refresh_h`). A steady desktop costs about one row a day. Needs diagnostics consent. |
+| S5.1 | Clusters never span subnets (D-24). Within a subnet, pairs with no direct measurement get a **relayed** link: the sum of both nodes' RTT to the coordinator, an upper bound on their direct path. The admin network view shows each device's subnet and coordinator RTT, and each link's `source` (`measured` or `relayed`). |
+| S5.1 | Site config `probes`: `rtt_every_s` (never used) replaced by `rtt_refresh_h` (24) and `rtt_change_pct` (50); `bandwidth_every_h` default 24 → 168. `clusters.max_age_h` default 48 → 72 (three refreshes). |
 | S5.6 | Agent `decode.rs`: llama-bench is found beside `--worker-bin` when `--decode-probe-bench` is not given. Without `--decode-probe-model`, the agent takes the reference model the coordinator offers (`decode_probe_model` in the heartbeat reply, sent only to a worker with no probe result yet), downloads it from `GET /api/v1/devices/{id}/probe-model` into `<cache>/probe/`, verifies size and SHA-256, and reuses it on later starts. The benchmark waits until the governor level is above 0 for a reason other than user activity, and no deployment is assigned (D-23). New error code `PROBE_MODEL_UNAVAILABLE`. |
 
 Database schema version 5: `net_edges` and `node_clusters`. New coordinator dependency: networkx (BSD-3-Clause).
@@ -38,6 +41,8 @@ No new error codes for S5.4 (a failed recompute is logged as `INTERNAL` and neve
 | ID | Decision | Why | Status |
 |---|---|---|---|
 | D-22 | **Clusterer v0: a networkx threshold graph, split into connected components, with first-guess thresholds.** A link joins two nodes when its median RTT is ≤ 5 ms and, once measured, its bandwidth is ≥ 100 Mbps; measurements older than 48 h are ignored. All four values are site settings. | PROJECT_PLAN names networkx, and a later clusterer can switch to community detection on the same graph. networkx is coordinator-only, so nodes are unaffected (D-07). The thresholds are a guess for a campus LAN, to be tuned against the building layout in the S5 demo. | Proposed |
+| D-24 | **One dedicated coordinator per network, and clusters follow networks.** Each network (subnet) has its own coordinator machine; nodes on that subnet form its clusters and never join a cluster on another subnet. Coordinators reach the coordinators of other networks to exchange work, for example to hand a request to another network's cluster and return the result when the work there has finished (federation, S8.10). | Colin, 2026-11-27. Within a network the paths are short and stable, so a node's RTT to its own coordinator is a good local figure, and the subnet is a boundary every node can report without new trust between nodes. Work crosses networks only between coordinators. | Colin |
+| D-25 | **Network figures are recorded on change, not scanned.** RTT comes from heartbeats the agent already sends, and is stored only on change or once a day. Node-to-node peer probes come later, off by default, run on events (enrollment, a network change, an admin request) and only between likely neighbours on one subnet; their figures replace relayed ones. | Colin, 2026-11-27: most nodes are desktops fixed in one place, so a constant scan wastes node resources (D-12) for figures that rarely change. Relayed figures need no open port or peer trust on nodes (D-07). | Colin |
 | D-23 | **Every worker runs the decode probe, with nothing to configure.** The agent uses llama-bench beside its worker binary, and the coordinator offers the catalog reference model (Qwen2.5-0.5B Q8, Apache-2.0) in the heartbeat reply. The agent downloads it once over the pinned channel, checks its SHA-256 and keeps it in its cache. The benchmark runs on its own thread, only while the governor would let the node contribute and no deployment is assigned; this now applies to the command-line flags too. | S4.7: CPU workers were planned from the memory-copy figure (34.1 GB/s on the dev PC against 27.6 GB/s measured by decoding). One-click nodes (D-07) cannot be asked to find a model file. The probe model is chosen by the operator for measurement, not offered to users, so it falls under D-10's exception for models we choose. A benchmark must not compete with the owner (D-12). | Proposed |
 
 ### How it was verified
@@ -64,10 +69,19 @@ No new error codes for S5.4 (a failed recompute is logged as `INTERNAL` and neve
 
 ### Follow-ups
 
+- S5.1: unit tests for relayed links (same subnet only, direct figures win), the subnet rule (no cluster spans
+  subnets; no known subnet, no cluster), relayed clusters from the store, and change-only recording (first figure,
+  small and large changes, a network change, the daily refresh, two heartbeats in one clock tick). API tests: five
+  devices on two subnets give two clusters from one row each; a host address or missing prefix is refused; no
+  figures are recorded without diagnostics consent. Rust: subnet masking (IPv4 and IPv6) and the loopback case.
+  On the dev PC the agent reports `10.0.0.0/24`.
 - **Placement must check the head's own links.** With llama.cpp RPC the head talks to every worker
   (hub and spoke), so a cluster can hold two nodes whose direct link is slow, joined through a third. S5.3
   should use the head-to-worker link from `net_edges`, not cluster membership alone.
 - S5.5: Grafana edges and clusters view.
+- Peer probes (D-25), and the first cross-machine check of relayed clusters, when the Mac and Linux machines are
+  available again.
+- Federation between per-network coordinators (D-24) needs a design: see S8.10.
 - S5.6 acceptance (the three-machine run within ±30%) is re-checked after S5.2 and S5.3, on all three machines.
 - The probe runs once per agent start. A re-probe after a llama.cpp upgrade comes with the update channel (S10).
 

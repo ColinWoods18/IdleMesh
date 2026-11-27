@@ -97,3 +97,11 @@ def test_recompute_stores_clusters_ignores_stale_coordinator_and_unknown_edges(t
     assert graph.recompute(store, ["a", "b", "c"], POLICY, 48)["changed"] == 0
     out = graph.recompute(store, ["a", "b"], POLICY, 48)
     assert out["removed"] == 1 and {r["node"] for r in store.all("SELECT node FROM node_clusters")} == {"a", "b"}
+
+
+def test_the_graph_keeps_every_measured_link_and_marks_which_ones_join():
+    from idlemesh_coord.graph import build
+    g = build(["a", "b", "c"], [link("a", "b", 1), link("b", "c", 40)], POLICY)
+    assert set(g.nodes) == {"a", "b", "c"}
+    assert g.edges["a", "b"]["joins"] is True and g.edges["b", "c"]["joins"] is False
+    assert g.edges["b", "c"]["rtt_ms_p50"] == 40

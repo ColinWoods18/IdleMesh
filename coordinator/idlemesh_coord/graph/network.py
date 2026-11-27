@@ -7,13 +7,15 @@ through a third. A node with no fast link is a cluster of its own.
 Only node-to-node measurements count. A node's path to the coordinator says nothing about its path to
 another node, so those edges are stored (S5.1) but left out here.
 
-This is plain Python on purpose: connected components need no graph library. networkx (PROJECT_PLAN) is
-deferred until a later clusterer needs community detection.
+The graph is a networkx graph (PROJECT_PLAN), so a later clusterer can swap connected components for
+community detection without changing how the graph is built.
 """
 import hashlib
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
+
+import networkx as nx
 
 
 @dataclass(frozen=True)
@@ -80,28 +82,24 @@ def close_enough(link: Link, policy: ClusterPolicy) -> bool:
     return link.bandwidth_mbps is None or link.bandwidth_mbps >= policy.min_mbps
 
 
+def build(nodes: Iterable[str], links: Iterable[Link], policy: ClusterPolicy) -> nx.Graph:
+    """The network graph: every node, and every measured link as an edge carrying its figures and `joins`
+    (whether it passes `policy`). Nodes a link names are added even when `nodes` leaves them out."""
+    g = nx.Graph()
+    g.add_nodes_from(nodes)
+    for link in links:
+        g.add_edge(link.a, link.b, rtt_ms_p50=link.rtt_ms_p50, rtt_ms_p95=link.rtt_ms_p95,
+                   bandwidth_mbps=link.bandwidth_mbps, measured_at=link.measured_at,
+                   joins=close_enough(link, policy))
+    return g
+
+
 def components(nodes: Iterable[str], links: Iterable[Link], policy: ClusterPolicy) -> list[frozenset[str]]:
     """Connected components of the links that pass `policy`, over `nodes` plus any node a link names.
     Largest first, then by the smallest member, so the order is stable."""
-    parent: dict[str, str] = {n: n for n in nodes}
-
-    def find(x: str) -> str:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for link in links:
-        parent.setdefault(link.a, link.a)
-        parent.setdefault(link.b, link.b)
-        if close_enough(link, policy):
-            ra, rb = find(link.a), find(link.b)
-            if ra != rb:
-                parent[max(ra, rb)] = min(ra, rb)
-    groups: dict[str, set[str]] = {}
-    for n in parent:
-        groups.setdefault(find(n), set()).add(n)
-    return sorted((frozenset(g) for g in groups.values()), key=lambda g: (-len(g), min(g)))
+    g = build(nodes, links, policy)
+    joined = nx.subgraph_view(g, filter_edge=lambda a, b: g.edges[a, b]["joins"])
+    return sorted((frozenset(c) for c in nx.connected_components(joined)), key=lambda c: (-len(c), min(c)))
 
 
 def assign_ids(clusters: list[frozenset[str]], previous: dict[str, str]) -> dict[str, str]:

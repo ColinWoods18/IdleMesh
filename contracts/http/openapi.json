@@ -2900,6 +2900,72 @@
         ]
       }
     },
+    "/api/v1/groups/{group_id}/devices/{device_id}/availability": {
+      "get": {
+        "description": "How likely a device is to stay idle (S6.1): the estimate for now, in its current state, and for each\nhour of the week (Monday 00:00 first, coordinator local time). Group administrators only.",
+        "operationId": "availability_api_v1_groups__group_id__devices__device_id__availability_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "horizon_min",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Horizon Min"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Availability",
+        "tags": [
+          "devices"
+        ]
+      }
+    },
     "/api/v1/groups/{group_id}/devices/{device_id}/bandwidth-test": {
       "post": {
         "description": "Test a device's link to this coordinator now (S5.2, D-25 admin request). Group administrators only.\nSkips the off-hours rule, but not the others: the owner's consent, the governor, and a link in use.",
@@ -4218,6 +4284,96 @@
           }
         },
         "summary": "Metrics Nodes",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/metrics/predictor-accuracy": {
+      "get": {
+        "description": "Predicted against actual staying idle, over time (S6.4); the fleet is the node named \"fleet\".",
+        "operationId": "metrics_predictor_accuracy_api_v1_metrics_predictor_accuracy_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 336,
+              "title": "Hours",
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "horizon_min",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Horizon Min"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Predictor Accuracy",
         "tags": [
           "metrics"
         ]

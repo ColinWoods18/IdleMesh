@@ -10,7 +10,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -94,6 +94,12 @@ CREATE INDEX IF NOT EXISTS net_edges_ts ON net_edges(ts);
 CREATE TABLE IF NOT EXISTS node_clusters (node TEXT PRIMARY KEY, cluster_id TEXT NOT NULL, since TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS node_networks (node TEXT PRIMARY KEY, subnet TEXT NOT NULL, since TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS telemetry_drops (node TEXT NOT NULL, at TEXT NOT NULL, count INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS node_availability (
+  node TEXT PRIMARY KEY, counts TEXT NOT NULL, samples INTEGER NOT NULL, window_from TEXT NOT NULL,
+  updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS predictor_accuracy (
+  ts TEXT NOT NULL, node TEXT NOT NULL, horizon_min INTEGER NOT NULL, n INTEGER NOT NULL, mean_p REAL,
+  observed REAL, brier REAL, brier_node REAL, PRIMARY KEY (ts, node, horizon_min));
 CREATE INDEX IF NOT EXISTS idle_samples_ts ON idle_samples(ts);
 CREATE INDEX IF NOT EXISTS node_events_ts ON node_events(ts);
 CREATE TABLE IF NOT EXISTS audit (
@@ -144,6 +150,7 @@ class Store:
             add_column("idle_samples", "contribution_level", "REAL")
             add_column("idle_samples", "level_reason", "TEXT")
         # version 5 (S5.4, S5.1): net_edges, node_clusters and node_networks are new tables, from SCHEMA
+        # version 6 (S6.1, S6.4): node_availability and predictor_accuracy are new tables, from SCHEMA
         if version < SCHEMA_VERSION:
             c.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 
@@ -157,6 +164,10 @@ class Store:
             except BaseException:
                 self._db.execute("ROLLBACK")
                 raise
+
+    def close(self) -> None:
+        with self._lock:
+            self._db.close()
 
     def one(self, sql: str, args=()) -> sqlite3.Row | None:
         with self._lock:

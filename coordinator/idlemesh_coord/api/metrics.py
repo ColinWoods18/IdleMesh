@@ -165,6 +165,22 @@ def network_links(app, group_id: str, start: str, end: str, method: str | None) 
              "bandwidth_mbps": r["bandwidth_mbps"]} for r in rows]
 
 
+def predictor_accuracy(app, group_id: str, start: str, end: str, horizon_min: int | None) -> list[dict]:
+    """The predictor's live accuracy over time (S6.4): for each scoring run, the mean predicted chance of staying
+    idle against the observed rate, and the Brier score, for the fleet and each of the group's nodes. `gap` is
+    predicted minus observed: drift shows as a gap moving away from 0."""
+    nodes = _nodes(app, group_id)
+    marks, args = _in(nodes)
+    h = horizon_min or app.state.settings.predictor_default_horizon_min
+    rows = app.state.store.all(
+        f"SELECT * FROM predictor_accuracy WHERE (node = '*' OR node IN ({marks})) AND horizon_min = ?"
+        f" AND ts >= ? AND ts <= ? ORDER BY ts LIMIT {MAX_ROWS}", (*args, h, start, end))
+    return [{"ts": r["ts"], "node": "fleet" if r["node"] == "*" else nodes[r["node"]]["name"],
+             "horizon_min": r["horizon_min"], "n": r["n"], "mean_p": r["mean_p"], "observed": r["observed"],
+             "gap": round(r["mean_p"] - r["observed"], 4), "brier": r["brier"], "brier_node_rate": r["brier_node"]}
+            for r in rows]
+
+
 # One colour per cluster in the network map, largest cluster first; nodes in no cluster are grey.
 CLUSTER_COLORS = ["#3274D9", "#56A64B", "#E0B400", "#A352CC", "#FF780A", "#00A3A3", "#E02F44", "#8AB8FF"]
 
@@ -280,6 +296,15 @@ def register(app: FastAPI) -> None:
         require_metrics(p)
         start, end = _range(from_ms, to_ms, hours)
         return await run_in_threadpool(network_links, request.app, p.group_id, start, end, method)
+
+    @app.get("/api/v1/metrics/predictor-accuracy", tags=["metrics"])
+    async def metrics_predictor_accuracy(request: Request, p: Principal = Depends(current), from_ms: int | None = None,
+                                         to_ms: int | None = None, hours: float = 24 * 14,
+                                         horizon_min: int | None = None):
+        """Predicted against actual staying idle, over time (S6.4); the fleet is the node named "fleet"."""
+        require_metrics(p)
+        start, end = _range(from_ms, to_ms, hours)
+        return await run_in_threadpool(predictor_accuracy, request.app, p.group_id, start, end, horizon_min)
 
     @app.get("/api/v1/metrics/network-nodes", tags=["metrics"])
     async def metrics_network_nodes(request: Request, p: Principal = Depends(current)):

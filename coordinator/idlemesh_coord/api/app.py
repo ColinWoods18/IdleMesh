@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from .. import graph, obs, partition, telemetry
+from .. import graph, obs, partition, predictor, telemetry
 from ..catalog import CATALOG, MODEL_FILES, PROBE_MODEL
 from ..config import Settings
 from ..domain.access import Branch, ForkError, Principal, Role, Scope, Visibility, can_create_with_visibility, \
@@ -79,6 +79,7 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
     app.state.passwords = Passwords(settings.argon2_fast)
     app.state.node_keys = telemetry.NodeKeys(os.path.dirname(os.path.abspath(settings.db_path)),
                                              settings.pseudonymize_nodes)
+    app.state.predictor = predictor.Predictor.from_store(app.state.store, predictor_policy(settings))
     app.state.login_attempts = {}
     obs.install_error_counter()
     errors.install(app)
@@ -186,12 +187,39 @@ def recompute_clusters(app) -> dict:
     return graph.recompute(store, nodes, cluster_policy(settings), settings.cluster_max_age_h)
 
 
+def predictor_policy(settings: Settings) -> predictor.PredictorPolicy:
+    return predictor.PredictorPolicy(window_days=settings.predictor_window_days,
+                                     horizons_min=tuple(settings.predictor_horizons_min),
+                                     default_horizon_min=settings.predictor_default_horizon_min,
+                                     prior_strength=settings.predictor_prior_strength,
+                                     interval_s=settings.telemetry_interval_s)
+
+
+def refit_predictor(app) -> dict:
+    """Refit the availability predictor over every enrolled, unrevoked device and swap it in (S6.1)."""
+    store, settings, keys = app.state.store, app.state.settings, app.state.node_keys
+    nodes = [keys.key(r["id"]) for r in store.all("SELECT id FROM devices WHERE status != 'revoked'")]
+    policy = predictor_policy(settings)
+    summary = predictor.recompute(store, nodes, policy)
+    app.state.predictor = predictor.Predictor.from_store(store, policy)
+    return summary
+
+
+def record_predictor_accuracy(app) -> dict:
+    """Score the predictor on the last day, against a fit made without it (S6.4)."""
+    store, settings, keys = app.state.store, app.state.settings, app.state.node_keys
+    nodes = [keys.key(r["id"]) for r in store.all("SELECT id FROM devices WHERE status != 'revoked'")]
+    return predictor.record_accuracy(store, nodes, predictor_policy(settings))
+
+
 async def _liveness_monitor(app) -> None:
     """Stop using a deployment as soon as a required device misses heartbeats (FR 04, spec 10)."""
     store, sched, settings = app.state.store, app.state.scheduler, app.state.settings
     next_prune = 0.0
     next_error_flush = time.monotonic() + 60
     next_clusters = time.monotonic() + 5
+    next_predictor = time.monotonic() + 10
+    next_accuracy = time.monotonic() + 120
     while True:
         await asyncio.sleep(1)
         if time.monotonic() >= next_error_flush:  # the coordinator's own error counts, once a minute (S3.6)
@@ -207,6 +235,18 @@ async def _liveness_monitor(app) -> None:
                 await run_in_threadpool(recompute_clusters, app)
             except Exception:  # noqa: BLE001 - clustering must never stop the liveness monitor
                 log.exception("cannot recompute clusters", extra={"error_code": "INTERNAL"})
+        if time.monotonic() >= next_predictor:  # availability predictor (S6.1)
+            next_predictor = time.monotonic() + settings.predictor_every_s
+            try:
+                await run_in_threadpool(refit_predictor, app)
+            except Exception:  # noqa: BLE001 - the predictor must never stop the liveness monitor
+                log.exception("cannot refit the availability predictor", extra={"error_code": "INTERNAL"})
+        if time.monotonic() >= next_accuracy:  # predictor accuracy, the drift metric (S6.4)
+            next_accuracy = time.monotonic() + settings.predictor_accuracy_every_h * 3600
+            try:
+                await run_in_threadpool(record_predictor_accuracy, app)
+            except Exception:  # noqa: BLE001 - metrics must never stop the liveness monitor
+                log.exception("cannot record predictor accuracy", extra={"error_code": "INTERNAL"})
         try:  # bandwidth tests through node tunnels (S5.2): starts at most one a minute, on its own task
             netprobe.maybe_sweep(app)
         except Exception:  # noqa: BLE001 - never let probes stop the liveness monitor
@@ -389,8 +429,9 @@ def _planning_rtt(path_rtt: dict | None, device_id: str, heartbeat_rtt: float) -
 
 
 def _profiles(store: Store, group_id: str, settings: Settings, path_rtt: dict | None = None,
-              links: dict | None = None) -> list[DeviceProfile]:
-    """Placement inputs per device. `links` is {device_id: (mbps, source)} from bandwidth tests (S5.3)."""
+              links: dict | None = None, availability=None) -> list[DeviceProfile]:
+    """Placement inputs per device. `links` is {device_id: (mbps, source)} from bandwidth tests (S5.3).
+    `availability(device_id, node_state)` returns the predictor's (term, estimate) for a device (S6.3)."""
     out = []
     for d in store.all("SELECT * FROM devices WHERE group_id = ?", (group_id,)):
         cap, pol = json.loads(d["capabilities"]), json.loads(d["policy"])
@@ -401,6 +442,9 @@ def _profiles(store: Store, group_id: str, settings: Settings, path_rtt: dict | 
             reason = f"inference worker stopped: {worker.get('last_stop_reason') or 'not started'}"
         bandwidth, source = cap["mem_bandwidth_gbps"], "reported"
         rtt, rtt_source = _planning_rtt(path_rtt, d["id"], cap["rtt_ms"])
+        state = cap.get("node_state") if fresh else None
+        level = cap.get("contribution") or {}
+        avail = availability(d["id"], state) if availability else None
         probe = cap.get("decode_probe")
         if probe and probe["model"] in CATALOG:  # convert timed decoding into streamed bytes per second
             ref = CATALOG[probe["model"]]
@@ -413,10 +457,19 @@ def _profiles(store: Store, group_id: str, settings: Settings, path_rtt: dict | 
             allow_battery=pol["allow_battery"], ready=reason is None, authorized=d["status"] == "active",
             paused=pol["paused"] or pol.get("reported_paused", False), stability=1.0,
             endpoint=worker["endpoint"] if worker and worker["state"] == "running" else None,
-            bandwidth_source=source, not_ready_reason=reason, node_state=cap.get("node_state") if fresh else None,
+            bandwidth_source=source, not_ready_reason=reason, node_state=state,
             link_mbps=(links or {}).get(d["id"], (None, None))[0],
-            link_source=(links or {}).get(d["id"], (None, None))[1]))
+            link_source=(links or {}).get(d["id"], (None, None))[1],
+            availability=round(avail[0], 4) if avail else None, availability_basis=avail[1].basis if avail else None,
+            contribution_level=level.get("level") if fresh else None,
+            contribution_reason=level.get("reason") if fresh else None))
     return out
+
+
+def _availability(app):
+    """The predictor's placement term for a device, keyed by device ID (S6.3)."""
+    pred, keys = app.state.predictor, app.state.node_keys
+    return lambda device_id, node_state: pred.availability(keys.key(device_id), node_state)
 
 
 def _sse(event: dict) -> str:
@@ -761,6 +814,25 @@ def register(app: FastAPI) -> None:
         return await run_in_threadpool(graph.network_view, S(request), devices, cluster_policy(settings),
                                        settings.cluster_max_age_h, 3 * settings.bandwidth_every_h)
 
+    @app.get("/api/v1/groups/{group_id}/devices/{device_id}/availability", tags=["devices"])
+    async def availability(group_id: str, device_id: str, request: Request, horizon_min: int | None = None,
+                           p: Principal = Depends(current)):
+        """How likely a device is to stay idle (S6.1): the estimate for now, in its current state, and for each
+        hour of the week (Monday 00:00 first, coordinator local time). Group administrators only."""
+        require_group(p, group_id)
+        require_admin(p)
+        d = S(request).one("SELECT id, name, capabilities FROM devices WHERE id = ? AND group_id = ?"
+                           " AND status != 'revoked'", (device_id, group_id))
+        if not d:
+            raise not_found()
+        pred = request.app.state.predictor
+        node = request.app.state.node_keys.key(device_id)
+        state = json.loads(d["capabilities"] or "{}").get("node_state")
+        term, est = pred.availability(node, state, horizon_min=horizon_min)
+        return {"device_id": device_id, "name": d["name"], "node_state": state, "availability": round(term, 4),
+                "now": est.as_dict(), "fitted_at": pred.updated_at, "window_days": pred.policy.window_days,
+                "horizons_min": list(pred.policy.horizons_min), "week": pred.week(node, est.horizon_min)}
+
     @app.get("/api/v1/devices/{device_id}/model-file", tags=["devices"])
     async def model_file(device_id: str, request: Request):
         """Byte ranges of the model a device is assigned to prefetch (FR 30), for LAN or test use."""
@@ -837,13 +909,14 @@ def register(app: FastAPI) -> None:
         hardware = {d["id"]: json.loads(d["capabilities"]).get("hardware")
                     for d in S(request).all("SELECT id, capabilities FROM devices WHERE group_id = ?", (group_id,))}
         for prof in _profiles(S(request), group_id, settings, request.app.state.path_rtt,
-                              netprobe.figures(request.app)):
+                              netprobe.figures(request.app), _availability(request.app)):
             state = ("unavailable" if not prof.ready else "paused" if prof.paused else
                      "incompatible" if prof.backend_digest != request.app.state.runtime.backend_digest else "ready")
             out.append({"device_id": prof.device_id, "name": prof.name, "os": prof.os, "arch": prof.arch,
                         "state": state, "budget_bytes": prof.budget_bytes, "power": prof.power,
                         "worker_running": prof.endpoint is not None, "node_state": prof.node_state,
-                        "link_mbps": prof.link_mbps,
+                        "link_mbps": prof.link_mbps, "availability": prof.availability,
+                        "contribution_level": prof.contribution_level,
                         "hardware": hardware.get(prof.device_id)})
         return {"devices": out}
 
@@ -863,7 +936,7 @@ def register(app: FastAPI) -> None:
         policy = PlacementPolicy(backend_digest=request.app.state.runtime.backend_digest, require_all=body.require_all,
                                  local_device=getattr(request.app.state.runtime, "local_device", None))
         profiles = _profiles(S(request), group_id, settings, request.app.state.path_rtt,
-                             await run_in_threadpool(netprobe.figures, request.app))
+                             await run_in_threadpool(netprobe.figures, request.app), _availability(request.app))
         explanation = plan(profiles, model, policy)
         if not explanation["feasible"]:
             raise ApiError(409, "PLACEMENT_INFEASIBLE", explanation.get("reason", "No feasible placement."),

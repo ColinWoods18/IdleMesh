@@ -79,6 +79,13 @@ class Settings:
     cluster_min_mbps: float = 100.0
     cluster_max_age_h: float = 72
     cluster_every_s: int = 300
+    # Availability predictor (S6.1; site config section `predictor`).
+    predictor_window_days: float = 28
+    predictor_horizons_min: tuple = (30, 60, 120)
+    predictor_default_horizon_min: int = 60
+    predictor_prior_strength: float = 10.0
+    predictor_every_s: int = 3600
+    predictor_accuracy_every_h: float = 6
 
     @classmethod
     def from_site(cls, site, **overrides) -> "Settings":
@@ -99,4 +106,10 @@ class Settings:
                       "off_hours_start": site.probes.off_hours_start, "off_hours_end": site.probes.off_hours_end,
                       "bandwidth_test_mb": site.probes.bandwidth_test_mb,
                       "cluster_max_age_h": site.clusters.max_age_h, "cluster_every_s": site.clusters.recompute_every_s,
+                      "predictor_window_days": site.predictor.window_days,
+                      "predictor_horizons_min": tuple(site.predictor.horizons_min),
+                      "predictor_default_horizon_min": site.predictor.default_horizon_min,
+                      "predictor_prior_strength": site.predictor.prior_strength,
+                      "predictor_every_s": site.predictor.recompute_every_s,
+                      "predictor_accuracy_every_h": site.predictor.accuracy_every_h,
                       **overrides})

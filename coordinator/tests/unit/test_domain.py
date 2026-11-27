@@ -275,3 +275,43 @@ def test_planning_prefers_a_recent_tunnel_rtt():
     assert _planning_rtt({"d": (9.0, now)}, "d", 18.0) == (9.0, "tunnel")
     assert _planning_rtt({"d": (9.0, now - PATH_RTT_MAX_AGE_S - 1)}, "d", 18.0) == (18.0, "heartbeat")
     assert _planning_rtt(None, "d", 18.0) == (18.0, "heartbeat")
+
+
+# --- Availability and contribution terms (S6.3) -----------------------------------------------------------------
+def test_placement_prefers_the_node_more_likely_to_stay_idle():
+    small = CATALOG["fixture-small"]
+    likely = dev("night-desk", 8, 51, 5, availability=0.92, availability_basis="hour")
+    unlikely = dev("hot-desk", 8, 51, 5, availability=0.15, availability_basis="hour")
+    out = plan([unlikely, likely], small, POLICY)
+    assert [s["device_id"] for s in out["stages"]] == ["night-desk"]
+    scores = {s["device_id"]: s for s in out["scores"]}
+    assert scores["night-desk"]["components"]["availability"] == 0.92
+    assert scores["hot-desk"]["inputs"]["availability_basis"] == "hour"
+    assert out["stages"][0]["availability"] == 0.92
+
+
+def test_capacity_is_weighted_by_the_contribution_level():
+    small = CATALOG["fixture-small"]
+    full = dev("full", 8, 51, 5, contribution_level=1.0, contribution_reason="idle_ramp")
+    half = dev("half", 8, 80, 5, contribution_level=0.5, contribution_reason="time_window")  # faster, but halved
+    out = plan([half, full], small, POLICY)
+    assert [s["device_id"] for s in out["stages"]] == ["full"]
+    scores = {s["device_id"]: s for s in out["scores"]}
+    assert scores["half"]["inputs"]["effective_bandwidth_gbps"] == 40.0
+    assert scores["half"]["components"]["bandwidth"] == round(40 / 51, 4)
+    alone = plan([half], small, POLICY)["stages"][0]
+    assert alone["effective_bandwidth_gbps"] == 40.0 and alone["bandwidth_gbps"] == 80
+    assert alone["est_compute_ms"] == pytest.approx(2 * plan([dev("x", 8, 80, 5)], small, POLICY)["stages"][0]
+                                                    ["est_compute_ms"], rel=0.01)
+
+
+def test_a_node_at_level_zero_is_filtered_with_the_governors_reason():
+    out = plan([dev("mac", 64, 800, 1), dev("hp", 8, 51, 5, contribution_level=0.0, contribution_reason="policy")],
+               CATALOG["fixture-small"], POLICY)
+    assert {f["device_id"]: f["reason"] for f in out["filtered_out"]} == {"hp": "contribution level 0 (policy)"}
+
+
+def test_without_a_predictor_or_level_the_terms_are_neutral():
+    out = plan(REF, CATALOG["pilot-test-c"], POLICY)
+    assert all(s["components"]["availability"] == 1.0 for s in out["scores"])
+    assert all(s["inputs"]["contribution_level"] is None for s in out["scores"])

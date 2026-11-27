@@ -60,6 +60,14 @@ clusters:                           # applies now (S5.4): which nodes share a ne
   max_age_h: 72                     # figures older than this are ignored (3 x rtt_refresh_h)
   recompute_every_s: 300
 
+predictor:                          # applies now (S6.1): idle probability by hour of the week, coordinator local time
+  window_days: 28                   # fit on this many days of idle samples
+  horizons_min: [30, 60, 120]       # "stays idle for the next N minutes", for each N
+  default_horizon_min: 60           # the horizon placement uses (S6.3)
+  prior_strength: 10                # an hour with few samples leans on the node's weekly rate, then the fleet's
+  recompute_every_s: 3600
+  accuracy_every_h: 6               # S6.4: score the last 24 h against a fit made without them (Grafana drift panel)
+
 fleet:                              # (planned, S8.9, D-12)
   min_active_nodes: 1
   max_active_nodes: 50

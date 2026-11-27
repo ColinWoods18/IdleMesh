@@ -251,6 +251,17 @@ we can find out why without visiting it.
 
 **Demo:** placement choosing the more-likely-idle node; the predictor accuracy panel.
 
+**Status** (details in [changes.md](changes.md), "Sprint 6"):
+
+| ID | Status |
+|---|---|
+| S6.1 | ✅ `predictor/`: per node, per hour of the week, the chance of staying idle for 30, 60 and 120 minutes, shrunk towards the node's and the fleet's rates; refitted hourly; admin endpoint `GET .../devices/{id}/availability` (D-28). Unit and API tests |
+| S6.2 | 🔧 `predictor/evaluate.py` (Brier, skill, calibration), `experiments/analysis/predictor_eval.py` and `predictor-evaluation.ipynb`. Run on a synthetic fleet only ([results](experiments/analysis/results/predictor-eval-synthetic-seed1.md)): **the real evaluation waits for two weeks of real samples** |
+| S6.3 | ✅ Availability score component, and capacity weighted by contribution level (D-28, D-29); both appear in each score's `components` and `inputs` and in each stage. Unit tests, and an API test where the deployment picks the steadier node |
+| S6.4 | 🔧 Accuracy scored out of sample every 6 h into `predictor_accuracy`; `GET /api/v1/metrics/predictor-accuracy`; Grafana row with predicted vs. actual, drift and Brier by node. API tests; **the panels have not been rendered in Grafana yet** |
+| S6.5 | ✅ `scripts/export_dataset.py` and [docs/telemetry-schema.md](docs/telemetry-schema.md): consent-filtered, seed-aliased, reproducible (D-30). API tests |
+| S6.6 | ⏳ Needs ≥5 nodes on ≥2 OSes and two weeks of idle data: waits for the machines |
+
 ## Sprint 7 · Replica serving, Ollama API and request metrics
 
 **Goal:** a request is answered by a whole model on one idle node through Ollama- and

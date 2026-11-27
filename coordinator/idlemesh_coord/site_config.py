@@ -108,6 +108,25 @@ class Clusters(_Strict):
     recompute_every_s: int = Field(300, ge=10, le=86_400)
 
 
+class Predictor(_Strict):
+    """The availability predictor (S6.1): idle probability per node by hour of the week, in the coordinator's
+    local time."""
+    window_days: float = Field(28, gt=0, le=366)        # samples older than this are not used
+    horizons_min: list[int] = Field([30, 60, 120], min_length=1, max_length=8)
+    default_horizon_min: int = Field(60, ge=1)          # what placement asks for
+    prior_strength: float = Field(10.0, ge=0, le=10_000)  # samples' worth of weight given to the node's own rate
+    recompute_every_s: int = Field(3600, ge=60, le=7 * 86_400)
+    accuracy_every_h: float = Field(6, gt=0, le=24 * 7)  # score the last day against an older fit (S6.4)
+
+    @model_validator(mode="after")
+    def _horizons(self):
+        if any(h < 1 or h > 24 * 60 for h in self.horizons_min):
+            raise ValueError("horizons_min are minutes between 1 and 1440")
+        if self.default_horizon_min not in self.horizons_min:
+            raise ValueError("default_horizon_min must be one of horizons_min")
+        return self
+
+
 class Fleet(_Strict):
     min_active_nodes: int = Field(1, ge=0)
     max_active_nodes: int = Field(50, ge=1)
@@ -136,6 +155,7 @@ class SiteConfig(_Strict):
     contribution: Contribution = Contribution()
     probes: Probes = Probes()
     clusters: Clusters = Clusters()
+    predictor: Predictor = Predictor()
     fleet: Fleet = Fleet()
     queue: Queue = Queue()
     # Directory of the file it was loaded from; relative paths (the log file) resolve against it.

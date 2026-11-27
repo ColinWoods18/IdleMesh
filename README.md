@@ -42,10 +42,13 @@ The inherited DIFA prototype, restructured and renamed, plus the sprint 1 founda
   [docs/runbooks/sprint5-hardware-checks.md](docs/runbooks/sprint5-hardware-checks.md).
 - **Decode probe on every worker (S5.6):** each worker times real decoding with llama-bench, using a
   reference model it fetches from the coordinator once.
+- **Availability predictor (Sprint 6, in progress):** each node's chance of staying idle by hour of the week,
+  used by placement together with the contribution level (`GET /api/v1/groups/{id}/devices/{device}/availability`),
+  its live accuracy in Grafana, and an anonymised dataset export ([docs/telemetry-schema.md](docs/telemetry-schema.md)).
 - A llama.cpp RPC adapter. It was tested across macOS (Metal), Windows (CPU) and Linux (CPU), most
   recently on all three at once ([results](experiments/llamacpp-feasibility/results/phase1-findings.md)).
 
-Not built yet: peer probes between nodes, coordinator federation, the availability predictor,
+Not built yet: peer probes between nodes, coordinator federation,
 Ollama endpoints, SSO, the web chat UI, installers, and gRPC. See the plan and [Sprints.md](Sprints.md).
 
 > **llama.cpp RPC is research-grade.** It has no authentication or encryption. Workers must stay on

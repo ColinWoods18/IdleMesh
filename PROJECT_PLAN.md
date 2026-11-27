@@ -311,7 +311,7 @@ Legend: **[~]** = partly provided by inherited DIFA code (what exists is noted i
 - [~] Node registry + telemetry ingestion — *exists: device registry with capabilities and heartbeats in SQLite; no time-series telemetry*
 - [ ] Network graph (nodes = machines; edges = RTT + bandwidth)
 - [ ] Clusterer v0: threshold graph on bandwidth/RTT → connected components / community detection
-- [ ] Availability predictor v0: per-node hour-of-week idle probability histogram
+- [x] Availability predictor v0: per-node hour-of-week idle probability histogram — *S6.1; real-data evaluation waits for S6.6*
 - [ ] Grafana view of nodes, clusters, idle heatmaps
 
 **Exit criteria:** ≥ 5 nodes across ≥ 2 OSes reporting; graph + clusters auto-update; ≥ 2 weeks of idle data.
@@ -326,7 +326,7 @@ Legend: **[~]** = partly provided by inherited DIFA code (what exists is noted i
   - When a model is added, show its licence (Ollama licence layer / GGUF metadata), require the admin to accept it, and record who accepted which licence and when, per model revision. This extends the agent's existing `--accept-license` check.
   - Check the Ollama registry's terms for third-party pulls; support Hugging Face and local files as other sources.
 - [ ] Router: small models → full replicas on single nodes; large models → layer-split across a cluster
-- [~] Placement engine v1: layers ∝ measured throughput × predicted availability — *exists: filter-and-score placement + latency model within 6–22% on real links; add availability term.* Replication = whole standby deployments (llama.cpp RPC has one copy per layer).
+- [~] Placement engine v1: layers ∝ measured throughput × predicted availability — *exists: filter-and-score placement + latency model within 6–22% on real links; availability term and contribution-weighted capacity added in S6.3.* Replication = whole standby deployments (llama.cpp RPC has one copy per layer).
 - [ ] **Graceful departure (C2), as yield-don't-leave (D-12):** user activity → the governor throttles the node to its minimal level within about 1 s and reports `yielding` → no new work → the coordinator lets it finish slowly or hands off at the next safe point → release memory. The memory-pressure kill remains the backstop. With llama.cpp RPC the handoff is between requests; see D-04.
 - [ ] **Contribution governor (D-12):** per-node levels from the idle-duration ramp, time windows (overnight or weekends), admin and owner settings, and live load and power. Applied through CPU priority and threads, GPU duty-cycling, and memory caps.
 - [ ] **Fleet scaling (D-12):** a minimum and maximum number of active nodes, scaled with queue demand and time windows, with warm standbys for recovery.

@@ -15,6 +15,69 @@ and why.
 
 ---
 
+## 2026-11-27 — Sprint 6: availability predictor, placement terms, accuracy metric, dataset export
+
+Status: **on branch `sprint-6`** (branched from `sprint-5`, which is pushed and not merged yet). Story-by-story
+status is in [Sprints.md](Sprints.md#sprint-6--availability-predictor-phase-1-exit).
+
+### What changed
+
+| Story | Change |
+|---|---|
+| S6.1 | New coordinator package `predictor/`. `model.py` turns a node's idle samples into availability runs (a node is available while its state is `idle` or `serving`; a gap longer than three sample intervals counts as unavailable) and counts, for each hour of the week and each horizon, the available samples and how many stayed available for the next N minutes. Samples whose outcome runs past the end of the data are left out. An hour with few samples leans on the node's weekly rate, and that on the fleet's: p = (stayed + s x prior) / (n + s). |
+| S6.1 | `service.py` refits every enrolled, unrevoked node from the last `predictor.window_days` (28) of samples every `predictor.recompute_every_s` (hourly), stores the counts in `node_availability` (a few kB per node) and keeps them in memory. `GET /api/v1/groups/{id}/devices/{device}/availability` (administrators): the estimate now, the placement term in the device's current state, and all 168 hours. Hours of the week use the coordinator's local time, as the off-hours rule does (no `tzdata` on Windows, so no named zones). |
+| S6.3 | Placement gains an **availability** score component (weight 0.2): p_stay when the node is idle now, p_available x p_stay when it is not (D-28). The weights become bandwidth 0.35, latency 0.25, availability 0.2, power 0.1, stability 0.1. **Capacity is weighted by the contribution level** (D-29): the bandwidth score and each stage's `est_compute_ms` use measured bandwidth x level. A node at level 0 is filtered out with the governor's reason. Each score carries `inputs` (level, reason, effective bandwidth, availability basis) and each stage `availability`, `contribution_level` and `effective_bandwidth_gbps`. `GET .../devices` shows `availability` and `contribution_level`. |
+| S6.2 | `predictor/evaluate.py`: fit before a split, score after it. Brier score, skill against the fleet's rate and each node's own rate, calibration in ten bins, per node. `experiments/analysis/predictor_eval.py` (command line) and `predictor-evaluation.ipynb` (calls it; plots calibration if matplotlib is installed). `predictor/synthetic.py` makes a synthetic office, lab, server and laptop fleet for tests and for the notebook until real data exists. |
+| S6.4 | Every `predictor.accuracy_every_h` (6) the coordinator scores the last 24 h against a fit made without them and stores one row per node and horizon, and one for the fleet, in `predictor_accuracy` (pruned with telemetry). `GET /api/v1/metrics/predictor-accuracy`. The Grafana dashboard gains an **Availability predictor (S6)** row: fleet predicted vs. actual, drift by node (predicted minus actual), Brier by node. |
+| S6.5 | `scripts/export_dataset.py`: idle samples, state and lid events, and network figures as CSV with a manifest (row counts, SHA-256). Only nodes whose current consent allows it (D-30); nodes renamed by a private seed; no device IDs, names, node keys, org or site IDs or receive times; reads a copy of the database. Columns in [docs/telemetry-schema.md](docs/telemetry-schema.md). |
+| — | The live tests that put the coordinator's stage on Metal (`needs_metal_head`) are skipped off macOS, and the flaky crashing-worker test is skipped on Windows (see Sprint 5 follow-ups). `Store.close()`. |
+
+Database schema version 6: `node_availability` and `predictor_accuracy`. Site config section `predictor`
+(`window_days`, `horizons_min`, `default_horizon_min`, `prior_strength`, `recompute_every_s`, `accuracy_every_h`).
+No new error codes: a failed refit or accuracy run is logged as `INTERNAL` and never stops the liveness monitor.
+No new dependencies.
+
+### Decisions
+
+| ID | Decision | Rationale | Status |
+|---|---|---|---|
+| D-28 | **Availability predictor v0 and its placement term.** Available means the owner is away (`idle` or `serving`). Per node, per hour of the week (coordinator local time), per horizon (30, 60, 120 min): the chance of staying available, shrunk towards the node's weekly rate and then the fleet's. Placement uses the 60-minute figure: p_stay for a node idle now, p_available x p_stay otherwise, with weight 0.2. | PROJECT_PLAN Phase 1 names the hour-of-week histogram. It needs no training, is explainable per node, and is the baseline E1 compares richer predictors with. A node at the keyboard now can still be planned for, but only as likely as it is to become idle and stay. | Proposed |
+| D-29 | **Placement scales a node's throughput by its contribution level, not its memory.** Effective bandwidth = measured bandwidth x governor level; a node at level 0 is not placed. | D-20: the level sets the worker's threads at its next start, and memory follows the ceiling, not the momentary level. A node held at 0.5 by a time window decodes about half as fast. | Proposed |
+| D-30 | **The research export follows current consent and leaves no identifiers.** Samples only from nodes whose owner's current consent allows them; nodes renamed by a private seed; UTC to the second; reproducible from the same database, seed and range. | An owner who withdraws consent expects their data to stop going out, even if it is still stored for retention. A seed makes exports repeatable for the paper without publishing the coordinator's keys. | Proposed |
+
+### How it was verified
+
+- Unit tests (`test_predictor.py`): hour of the week (Monday 00:00, other zones), runs ending at an unavailable
+  sample, a gap or the end of the data; counts per hour and horizon; censored samples left out; the one-pass
+  count equal to a brute-force definition on 3,000 random samples; shrinkage; the placement term; outcomes
+  equal to counts; the evaluation and the accuracy record on a synthetic three-week fleet.
+- Placement unit tests (`test_domain.py`): the more-likely-idle node is chosen between two equal nodes; a node
+  at level 0.5 is planned at half its bandwidth and loses to a slower node at full level; level 0 is filtered
+  with its reason; without a predictor or a level both terms are neutral.
+- API tests (`test_availability.py`, `test_dataset_export.py`): samples uploaded through telemetry, then the
+  availability endpoint (a steady node above 0.9, a restless one below 0.2), a deployment that picks the
+  steady node, the accuracy metric, admin-only access; the export's consent rules, no identifiers in any file,
+  identical bytes from the same seed, the time range.
+- Offline evaluation on the synthetic fleet (8 nodes, 28 days fitted, 7 scored):
+  [results](experiments/analysis/results/predictor-eval-synthetic-seed1.md). At 60 minutes, Brier 0.049
+  against 0.092 for each node's flat rate (skill 0.47) and 0.116 for the fleet rate. Office desks gain most
+  (skill 0.80); lab machines and the server gain little or slightly lose, as their idle time does not follow
+  the clock. **This is synthetic data and says nothing about real machines.**
+- Not checked: real idle data (none on the dev PC), the Grafana panels rendered, the notebook run in Jupyter
+  (not installed; its code cell was run with plain Python).
+
+### Follow-ups
+
+- **S6.6 Phase 1 exit** needs at least 5 nodes on at least 2 OSes reporting for 2 weeks, so it waits for the
+  machines. Then run the notebook on the real database and compare with the live accuracy panel.
+- The predictor ignores the governor's time windows. A window that caps a node at night makes it "available"
+  at a low level; the contribution term handles the level, but a later predictor could learn levels too.
+- Hour-of-week only: no holidays, no term calendar. E1 compares richer predictors against this baseline.
+- A Grafana time-zone note: the heatmap and the predictor use the coordinator's local time; the dashboard uses
+  the browser's.
+
+---
+
 ## 2026-11-27 — Sprint 5: network graph, clusters by subnet, decode probe, bandwidth test, network view
 
 Status: **on branch `sprint-5`.** Story-by-story status is in

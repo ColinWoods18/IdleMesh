@@ -27,6 +27,12 @@ def test_settings_take_the_governor_section():
     assert s.contribution_windows[0]["start"] == "20:00" and s.contribution_windows[1]["max_level"] == 0.5
 
 
+def test_settings_take_the_predictor_section():
+    s = Settings.from_site(site_config.load(EXAMPLE))
+    assert (s.predictor_window_days, s.predictor_horizons_min, s.predictor_default_horizon_min) == (28, (30, 60, 120), 60)
+    assert (s.predictor_prior_strength, s.predictor_every_s) == (10, 3600)
+
+
 def test_settings_take_queue_limits_and_site_identity():
     site = site_config.load(EXAMPLE)
     s = Settings.from_site(site, db_path="x.sqlite3")

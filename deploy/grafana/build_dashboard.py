@@ -126,6 +126,41 @@ def network_panels(y: int) -> list[dict]:
     ]
 
 
+def predictor_panels(y: int) -> list[dict]:
+    """The availability predictor's live accuracy (S6.4): predicted against actual staying idle, and drift."""
+    acc = [("ts", "Time", "timestamp"), ("node", "node", "string")]
+    legend = {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}
+    line = {"lineWidth": 2, "showPoints": "always", "pointSize": 4, "spanNulls": True}
+    return [
+        row("Availability predictor (S6)", y),
+        panel("timeseries", "Fleet: predicted vs. actual staying idle (60 min)", (0, y + 1, 8, 8), [
+            dict(query("/api/v1/metrics/predictor-accuracy", [("ts", "Time", "timestamp"),
+                                                             ("mean_p", "Predicted", "number"),
+                                                             ("observed", "Actual", "number"),
+                                                             ("node", "node", "string")]))],
+            description="Every accuracy run (predictor.accuracy_every_h) scores the last 24 hours against a fit "
+                        "made without them. Predicted: the mean chance the model gave each idle minute of staying "
+                        "idle for the next hour. Actual: how often it did. The lines should stay together.",
+            transformations=[{"id": "filterByValue", "options": {"type": "include", "match": "any", "filters": [
+                {"fieldName": "node", "config": {"id": "equal", "options": {"value": "fleet"}}}]}}],
+            defaults={"unit": "percentunit", "min": 0, "max": 1, "custom": line}, options=legend),
+        panel("timeseries", "Drift by node: predicted minus actual", (8, y + 1, 8, 8), [
+            query("/api/v1/metrics/predictor-accuracy", acc + [("gap", "gap", "number")])],
+            description="Above 0: the model was too hopeful about that node; below 0: too gloomy. A node whose line "
+                        "moves away from 0 and stays there has changed its routine (S6.4).",
+            transformations=[by_node()],
+            defaults={"unit": "percentunit", "min": -1, "max": 1, "displayName": "${__field.labels.node}",
+                      "custom": line}, options=legend),
+        panel("timeseries", "Brier score by node", (16, y + 1, 8, 8), [
+            query("/api/v1/metrics/predictor-accuracy", acc + [("brier", "Brier", "number")])],
+            description="Mean squared error of the predictions (0 is perfect, 0.25 is a coin toss). Compare with "
+                        "the evaluation notebook, experiments/analysis/predictor-evaluation.ipynb (S6.2).",
+            transformations=[by_node()],
+            defaults={"min": 0, "decimals": 3, "displayName": "${__field.labels.node}", "custom": line},
+            options=legend),
+    ]
+
+
 def build() -> dict:
     hours = [f"{h:02d}" for h in range(24)]
     panels = [
@@ -232,6 +267,7 @@ def build() -> dict:
                         "{crash_id}."),
     ]
     panels += network_panels(49)
+    panels += predictor_panels(70)
     return {
         "uid": "idlemesh-overview", "title": "IdleMesh overview", "tags": ["idlemesh"], "timezone": "browser",
         "schemaVersion": 39, "version": 1, "editable": False, "graphTooltip": 1, "refresh": "1m",

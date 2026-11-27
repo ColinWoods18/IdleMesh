@@ -225,6 +225,17 @@ we can find out why without visiting it.
 
 **Demo:** the cluster map compared with the real building layout.
 
+**Status** (details in [changes.md](changes.md), "Sprint 5"):
+
+| ID | Status |
+|---|---|
+| S5.1 | ✅ Coordinator-relayed (D-25): agents report their subnet; the coordinator stores each node's heartbeat RTT to itself only on change or daily; same-subnet pairs get relayed links; clusters never span subnets (D-24). Unit and API tests; the agent's subnet checked on the dev PC. Peer probes (event-driven, off by default) follow once two reachable machines are available |
+| S5.2 | ✅ Built-in bandwidth test served by the agent's tunnel (`agent/src/bulk.rs`), so nodes need nothing extra (D-07): the coordinator times 8 MiB each way after a 1 MiB warm-up and keeps the slower direction. Due on events (first worker start, network change) as soon as the governor allows, otherwise weekly in off-hours (D-27); admin trigger `POST .../devices/{id}/bandwidth-test`. Live-tested against a capped relay (50, 60, 150, 200 Mbps, all within 1-2%). **Real links wait for the machines:** [sprint5-hardware-checks.md](docs/runbooks/sprint5-hardware-checks.md) step 1 |
+| S5.3 | 🔧 Placement fills `link_mbps` from the tunnel test (the link to the head, as the follow-up asked), adds its per-token traffic to the stage and to the latency score, and times an untested link at load. Loopback: a 60 Mbps link is now predicted at 127 ms/token instead of 19 (measured 166, −23%). **Acceptance (the Wi-Fi rounds re-checked) waits for the machines:** step 2 of the runbook |
+| S5.4 | ✅ `graph/` package: links from measurements (the worse direction counts), threshold rule (median RTT ≤ 5 ms, and ≥ 100 Mbps once bandwidth is measured), connected components, cluster IDs that survive a node joining or leaving. Recomputed every 5 minutes; changes logged. `net_edge` telemetry records and the admin `GET .../network` view. networkx graph (D-22). Unit and API tests; real measurements wait for S5.1 |
+| S5.5 | ✅ `NET_PROBE_FAILED`, `NET_PROBE_REFUSED` and `LINK_DEGRADED` (bandwidth below half the last test, or a heartbeat RTT jump on the same network); network metrics endpoints; Grafana **Network** row: node-graph cluster map, nodes-and-links table, bandwidth and RTT over time, probe health by code. Unit and API tests; **the panels have not been rendered in Grafana yet** (runbook step 3) |
+| S5.6 | 🔧 Every worker probes by default: llama-bench beside the worker, the reference model offered by the coordinator and verified by SHA-256, the benchmark only while the governor allows contribution (D-23). Live-tested on the dev PC. S5.2 and S5.3 are now built, so the acceptance is the three-machine re-run in step 2 of the [runbook](docs/runbooks/sprint5-hardware-checks.md). Estimated before S5.3: the two-machine run goes from −34.5% to about −26%; the three-machine gap is the link traffic S5.3 now counts |
+
 ## Sprint 6 · Availability predictor; Phase 1 exit
 
 **Goal:** placement prefers nodes likely to stay idle; Phase 1 exit criteria met.
@@ -271,6 +282,7 @@ OpenAI-compatible endpoints, and every request leaves a performance record.
 | S8.1 | Scale the fair queue: configurable limits, per-user quotas and rate limits, `-np` slots as capacity | Load test with simulated users stays fair |
 | S8.2 | **Yield, don't leave (C2, D-12):** user activity → governor at the minimal level within about 1 s → `yielding` → no new work → the coordinator chooses between finishing slowly and re-running elsewhere (by estimated time) → handoff, then memory release. The memory-pressure kill is the backstop. | A student touching a busy node sees no lag; the in-flight reply completes; yield and handoff timings measured |
 | S8.9 | **Fleet scaling (D-12):** minimum and maximum active nodes, scaled with queue demand and time windows, with warm standbys | Overnight scale-up and an idle-queue scale-down observed; active node-hours tracked |
+| S8.10 | **Federation (D-24):** one coordinator per network; coordinators find each other, forward work to another network's cluster when theirs is busy or too small, and return the result when that work has finished. Design first: discovery and trust between coordinators, and what is shared (capacity summaries, not node details). Decided (Colin): work goes to another network when the local cluster is **busy or too small for the model**; chats are not kept where the work ran (D-26). Open: where a student's request enters (their network's coordinator, or one campus address) | Two coordinators on two networks: a request entering one is served by the other's cluster and the reply comes back through the first |
 | S8.3 | Recovery: re-run on another replica, continuing from streamed text | A scripted kill mid-reply completes elsewhere |
 | S8.4 | Standby deployment for split models; prefetch speeds up the reload | Recovery time measured |
 | S8.5 | **Recovery and drain metrics:** departures by type, recovery time, lost tokens, re-runs | These double as the E2 baseline dataset |
@@ -289,7 +301,7 @@ OpenAI-compatible endpoints, and every request leaves a performance record.
 | S9.2 | Replace DIFA groups and invitations with `org_id`/`site_id` and roles; remove the dead code | Tests rewritten; coverage kept |
 | S9.3 | `chat/` web UI: conversations, streaming, queue position, cancel | Usable on desktop and phone |
 | S9.4 | **User-facing error IDs:** every error the student sees shows a short reference ID that maps to the request's logs and trace | Support can find the full trace from the ID alone |
-| S9.5 | Privacy defaults per the privacy office: private history, retention, no-history mode, telemetry retention | Retention jobs tested for chats and telemetry |
+| S9.5 | Privacy defaults per the privacy office: private history, retention, no-history mode, telemetry retention. **D-26:** without sign-in a chat is ephemeral and disappears when the student leaves; signed-in users get persistent chat storage tied to their account | An anonymous chat is gone after the session ends; a signed-in user's chats come back on the next sign-in; retention jobs tested for chats and telemetry |
 | S9.6 | API keys for programmatic use | A key from the UI works with `/v1` and `/api` |
 
 **Demo:** sign in, queue, chat, then trigger an error and trace it from its reference ID.

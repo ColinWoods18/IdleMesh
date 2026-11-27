@@ -20,6 +20,7 @@ message TelemetryBatch {
   repeated NodeHealthSample health = 6;
   repeated LogEvent logs = 7;      // warn and above by default; more during a debug window
   repeated ErrorEvent errors = 8;
+  repeated NetEdge net_edges = 11; // sprint 5
   uint64 dropped_since_last = 9;   // records the buffer had to drop (bounded size, oldest first)
 }
 
@@ -88,6 +89,19 @@ message ErrorEvent {
   optional string request_id = 4;
   uint32 count = 5;
   map<string, string> context = 6;
+}
+
+// One network measurement from the uploading node to a peer node or to the coordinator (sprint 5, S5.1 and
+// S5.2). JSON {"kind": "net_edge", ...} in the telemetry upload since S5.4. The RTT pair, the bandwidth, or
+// both are present. Needs the owner's diagnostics consent: it describes the node's network, not its user.
+message NetEdge {
+  google.protobuf.Timestamp ts = 1;
+  string dst = 2;                  // the peer's device ID, or "coordinator"
+  string method = 3;               // tcp, tunnel, tunnel_bulk, iperf3_lab
+  optional float rtt_ms_p50 = 4;
+  optional float rtt_ms_p95 = 5;
+  optional float bandwidth_mbps = 6;
+  optional uint32 samples = 7;
 }
 
 // Agent panic, or a worker that exited on its own (sprint 4).

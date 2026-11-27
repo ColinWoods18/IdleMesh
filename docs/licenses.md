@@ -12,7 +12,7 @@ review this file, together with the IP questions in PROJECT_PLAN Phase 4.
 ## Summary
 
 - **Rust agent:** 207 crates (all platforms in the lockfile).
-- **Python coordinator:** 23 packages needed at run time.
+- **Python coordinator:** 24 packages needed at run time.
 - **Non-permissive dependencies:** 0. Where a crate offers a choice ("MIT OR Apache-2.0"), we rely on the permissive option shown.
 
 ### What the licences in use ask of us
@@ -281,6 +281,7 @@ copyright notices and licence texts (to build in sprint 10 with the installers, 
 | httpcore | 1.0.9 | BSD-3-Clause | BSD-3-Clause |
 | httpx | 0.28.1 | BSD-3-Clause | BSD-3-Clause |
 | idna | 3.20 | BSD-3-Clause | BSD-3-Clause |
+| networkx | 3.7 | BSD-3-Clause | BSD-3-Clause |
 | opentelemetry-api | 1.45.2 | Apache-2.0 | Apache-2.0 |
 | pycparser | 3.12 | BSD-3-Clause | BSD-3-Clause |
 | pydantic | 2.14.3 | MIT | MIT |

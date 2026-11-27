@@ -10,7 +10,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -86,6 +86,13 @@ CREATE INDEX IF NOT EXISTS error_events_ts ON error_events(ts);
 CREATE TABLE IF NOT EXISTS node_events (
   node TEXT NOT NULL, ts TEXT NOT NULL, kind TEXT NOT NULL, from_state TEXT, to_state TEXT NOT NULL,
   org_id TEXT, site_id TEXT, received_at TEXT NOT NULL, PRIMARY KEY (node, ts, kind, to_state));
+CREATE TABLE IF NOT EXISTS net_edges (
+  src TEXT NOT NULL, dst TEXT NOT NULL, ts TEXT NOT NULL, method TEXT NOT NULL, rtt_ms_p50 REAL, rtt_ms_p95 REAL,
+  bandwidth_mbps REAL, samples INTEGER, org_id TEXT, site_id TEXT, received_at TEXT NOT NULL,
+  PRIMARY KEY (src, dst, ts, method));
+CREATE INDEX IF NOT EXISTS net_edges_ts ON net_edges(ts);
+CREATE TABLE IF NOT EXISTS node_clusters (node TEXT PRIMARY KEY, cluster_id TEXT NOT NULL, since TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS node_networks (node TEXT PRIMARY KEY, subnet TEXT NOT NULL, since TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS telemetry_drops (node TEXT NOT NULL, at TEXT NOT NULL, count INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idle_samples_ts ON idle_samples(ts);
 CREATE INDEX IF NOT EXISTS node_events_ts ON node_events(ts);
@@ -136,6 +143,7 @@ class Store:
             add_column("devices", "log_override", "TEXT")
             add_column("idle_samples", "contribution_level", "REAL")
             add_column("idle_samples", "level_reason", "TEXT")
+        # version 5 (S5.4, S5.1): net_edges, node_clusters and node_networks are new tables, from SCHEMA
         if version < SCHEMA_VERSION:
             c.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
 

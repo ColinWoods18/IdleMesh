@@ -1580,6 +1580,571 @@
         "overrides": []
       },
       "options": {}
+    },
+    {
+      "id": 14,
+      "type": "row",
+      "title": "Network (S5)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 49,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [],
+      "targets": []
+    },
+    {
+      "id": 15,
+      "type": "nodeGraph",
+      "title": "Network map",
+      "description": "Nodes coloured by cluster (D-22, D-24; clusters never span subnets), each joined to the coordinator by its own link (RTT, and bandwidth once tested, S5.2), and to other nodes by links that join a cluster. Compare it with the building layout (Sprint 5 demo).",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "idlemesh"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 50,
+        "w": 14,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "nodes",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "idlemesh"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/api/v1/metrics/network-graph",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "part",
+                "value": "nodes"
+              }
+            ]
+          },
+          "root_selector": "",
+          "filters": [],
+          "columns": [
+            {
+              "selector": "id",
+              "text": "id",
+              "type": "string"
+            },
+            {
+              "selector": "title",
+              "text": "title",
+              "type": "string"
+            },
+            {
+              "selector": "subtitle",
+              "text": "subtitle",
+              "type": "string"
+            },
+            {
+              "selector": "mainstat",
+              "text": "mainstat",
+              "type": "string"
+            },
+            {
+              "selector": "secondarystat",
+              "text": "secondarystat",
+              "type": "string"
+            },
+            {
+              "selector": "color",
+              "text": "color",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "refId": "edges",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "idlemesh"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/api/v1/metrics/network-graph",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "part",
+                "value": "edges"
+              }
+            ]
+          },
+          "root_selector": "",
+          "filters": [],
+          "columns": [
+            {
+              "selector": "id",
+              "text": "id",
+              "type": "string"
+            },
+            {
+              "selector": "source",
+              "text": "source",
+              "type": "string"
+            },
+            {
+              "selector": "target",
+              "text": "target",
+              "type": "string"
+            },
+            {
+              "selector": "mainstat",
+              "text": "mainstat",
+              "type": "string"
+            },
+            {
+              "selector": "secondarystat",
+              "text": "secondarystat",
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "transformations": [],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "nodes": {
+          "mainStatUnit": "",
+          "secondaryStatUnit": ""
+        },
+        "edges": {}
+      }
+    },
+    {
+      "id": 16,
+      "type": "table",
+      "title": "Nodes and links",
+      "description": "Each node's subnet and cluster, its RTT to the coordinator from heartbeats (S5.1) and its link bandwidth from the latest tunnel test (S5.2). An empty Link cell means never tested: placement then leaves that link's traffic out (S5.3).",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "idlemesh"
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 50,
+        "w": 10,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "idlemesh"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/api/v1/metrics/network-nodes",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": []
+          },
+          "root_selector": "",
+          "filters": [],
+          "columns": [
+            {
+              "selector": "name",
+              "text": "Node",
+              "type": "string"
+            },
+            {
+              "selector": "subnet",
+              "text": "Subnet",
+              "type": "string"
+            },
+            {
+              "selector": "cluster",
+              "text": "Cluster",
+              "type": "string"
+            },
+            {
+              "selector": "cluster_size",
+              "text": "Size",
+              "type": "number"
+            },
+            {
+              "selector": "coordinator_rtt_ms",
+              "text": "RTT (ms)",
+              "type": "number"
+            },
+            {
+              "selector": "link_mbps",
+              "text": "Link (Mbps)",
+              "type": "number"
+            },
+            {
+              "selector": "link_measured_at",
+              "text": "Tested",
+              "type": "timestamp"
+            }
+          ]
+        }
+      ],
+      "transformations": [],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Link bandwidth to the coordinator",
+      "description": "Tunnel bandwidth tests (S5.2): the slower of the two directions. Weekly in off-hours, and at once on a node's first worker start or a network change.",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "idlemesh"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 62,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "idlemesh"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/api/v1/metrics/network-links",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "from_ms",
+                "value": "${__from}"
+              },
+              {
+                "key": "to_ms",
+                "value": "${__to}"
+              },
+              {
+                "key": "method",
+                "value": "tunnel_test"
+              }
+            ]
+          },
+          "root_selector": "",
+          "filters": [],
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "node",
+              "text": "node",
+              "type": "string"
+            },
+            {
+              "selector": "bandwidth_mbps",
+              "text": "Mbps",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "node"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Mbits",
+          "min": 0,
+          "displayName": "${__field.labels.node}",
+          "custom": {
+            "drawStyle": "points",
+            "pointSize": 6,
+            "showPoints": "always"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "RTT to the coordinator",
+      "description": "Heartbeat RTT, recorded only when it changes or once a day (S5.1, D-25), so points are sparse on a steady network and step at a change.",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "idlemesh"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 62,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "idlemesh"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/api/v1/metrics/network-links",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "from_ms",
+                "value": "${__from}"
+              },
+              {
+                "key": "to_ms",
+                "value": "${__to}"
+              },
+              {
+                "key": "method",
+                "value": "heartbeat"
+              }
+            ]
+          },
+          "root_selector": "",
+          "filters": [],
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "node",
+              "text": "node",
+              "type": "string"
+            },
+            {
+              "selector": "rtt_ms_p50",
+              "text": "RTT",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "node"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "displayName": "${__field.labels.node}",
+          "custom": {
+            "lineInterpolation": "stepAfter",
+            "showPoints": "always",
+            "pointSize": 5,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Probe health",
+      "description": "Failed and refused bandwidth tests, degraded links and tunnel faults, by error code (docs/error-codes.md). LINK_DEGRADED: bandwidth below half the last test, or RTT up by more than probes.rtt_change_pct.",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "idlemesh"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 62,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "idlemesh"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/api/v1/metrics/errors",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "from_ms",
+                "value": "${__from}"
+              },
+              {
+                "key": "to_ms",
+                "value": "${__to}"
+              },
+              {
+                "key": "codes",
+                "value": "network"
+              }
+            ]
+          },
+          "root_selector": "",
+          "filters": [],
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "code",
+              "text": "code",
+              "type": "string"
+            },
+            {
+              "selector": "count",
+              "text": "count",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "transformations": [
+        {
+          "id": "groupBy",
+          "options": {
+            "fields": {
+              "Time": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "code": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "count": {
+                "aggregations": [
+                  "sum"
+                ],
+                "operation": "aggregate"
+              }
+            }
+          }
+        },
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "code"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "displayName": "${__field.labels.code}",
+          "unit": "short",
+          "min": 0,
+          "decimals": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 70,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     }
   ],
   "templating": {

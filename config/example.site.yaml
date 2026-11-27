@@ -45,10 +45,20 @@ contribution:                       # contribution governor (S4.9); owners can o
       end: "20:00"
       max_level: 0.5
 
-probes:                             # (planned, S5)
-  rtt_every_s: 300
-  bandwidth_every_h: 24
-  bandwidth_off_hours_only: true
+probes:                             # network figures; most nodes are fixed desktops, so refresh rarely
+  rtt_refresh_h: 24                 # applies now (S5.1): RTT is recorded on change, else this often
+  rtt_change_pct: 50                # a change this large (and at least 1 ms) is recorded at once
+  bandwidth_every_h: 168            # applies now (S5.2): the built-in bandwidth test through each tunnel, weekly
+  bandwidth_off_hours_only: true    # the weekly refresh waits for off-hours; first tests and network changes do not
+  off_hours_start: "20:00"          # coordinator local time; weekends are off-hours all day
+  off_hours_end: "07:00"
+  bandwidth_test_mb: 8              # MiB each way per test
+
+clusters:                           # applies now (S5.4): which nodes share a network cluster
+  max_rtt_ms: 5.0                   # median RTT at or below this joins two nodes
+  min_mbps: 100                     # and bandwidth at or above this, once measured between nodes (peer probes)
+  max_age_h: 72                     # figures older than this are ignored (3 x rtt_refresh_h)
+  recompute_every_s: 300
 
 fleet:                              # (planned, S8.9, D-12)
   min_active_nodes: 1

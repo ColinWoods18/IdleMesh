@@ -13,6 +13,8 @@ after which `login` signs in again.
                                                           --allow-battery (the agent's own limits still apply)
   python scripts/pilot.py deploy                plan, prefetch, and load the test model on all devices
   python scripts/pilot.py status                current deployment, prefetch progress, and stage layout
+  python scripts/pilot.py network               subnets, clusters, and each link's RTT and tested bandwidth (S5)
+  python scripts/pilot.py bandwidth-test "Ubuntu VM"      test one device's link to the coordinator now (S5.2)
   python scripts/pilot.py ask "Say hello."      one synthetic request, with timing
   python scripts/pilot.py bench --n 10          repeated requests, median timing, saved as JSON
 
@@ -141,6 +143,41 @@ def cmd_devices(a) -> None:
               f"budget={d['budget_bytes'] / GB:6.1f} GB  power={d['power']:<8} {d['os']}/{d['arch']}  {d['device_id']}")
 
 
+def _one_device(c, state, name: str) -> dict:
+    devs = check(c.get(f"/api/v1/groups/{state['group_id']}/devices"))["devices"]
+    match = [d for d in devs if d["name"] == name or d["device_id"] == name]
+    if len(match) != 1:
+        sys.exit(f"No single device named {name!r}. Devices: {', '.join(d['name'] for d in devs)}")
+    return match[0]
+
+
+def cmd_network(a) -> None:
+    """The network view (S5.1, S5.4) and each device's bandwidth test status (S5.2)."""
+    state = load()
+    c = client(state)
+    view = check(c.get(f"/api/v1/groups/{state['group_id']}/network"))
+    probes = {d["device_id"]: d for d in check(c.get(f"/api/v1/groups/{state['group_id']}/network/probes"))["devices"]}
+    for n in view["nodes"]:
+        pr = probes.get(n["device_id"], {})
+        last = pr.get("last_test") or {}
+        mbps = f"{n['coordinator_mbps']:g} Mbps" if n["coordinator_mbps"] else "untested"
+        rtt = f"{n['coordinator_rtt_ms']:g} ms" if n["coordinator_rtt_ms"] is not None else "-"
+        print(f"{n['name']:<16} subnet={n['subnet'] or '-':<18} cluster={n['cluster_id'] or '-':<10} rtt={rtt:<9} "
+              f"link={mbps:<12} due={pr.get('due') or '-':<16} "
+              + (f"blocked: {pr['blocked_by']}" if pr.get("blocked_by") else "")
+              + (f" last test failed: {last.get('message')}" if last and not last.get("ok") else ""))
+    for link in view["links"]:
+        print(f"  link {link['a']} - {link['b']}: {link['rtt_ms_p50']} ms ({link['source']}), joins={link['joins']}")
+
+
+def cmd_bandwidth_test(a) -> None:
+    state = load()
+    c = client(state)
+    d = _one_device(c, state, a.device)
+    print(json.dumps(check(c.post(f"/api/v1/groups/{state['group_id']}/devices/{d['device_id']}/bandwidth-test",
+                                  timeout=120)), indent=2))
+
+
 def cmd_policy(a) -> None:
     state = load()
     c = client(state)
@@ -167,8 +204,12 @@ def show_stages(expl: dict) -> None:
         print(f"  {s['name']:<16} layers {s['layers'][0]:>3}-{s['layers'][1] - 1:<3} "
               f"head={'yes' if s.get('holds_output_head') else 'no ':<3} transport={s.get('transport', 'local'):<9} "
               f"endpoint={s.get('endpoint') or '-':<22} rtt={s.get('rtt_ms', 0)} ms ({s.get('rtt_source', 'heartbeat')})"
+              f" bw={s.get('bandwidth_gbps')} GB/s ({s.get('bandwidth_source', 'reported')})"
               + (f", planned with {s['planned_rtt_ms']} ms" if "planned_rtt_ms" in s else "")
-              + (f"  [rtt measurement failed: {s['rtt_measurement_error']}]" if s.get("rtt_measurement_error") else ""))
+              + (f" link={s['link_mbps']} Mbps ({s.get('link_source')})" if s.get("link_mbps") else
+                 (" link=untested" if s.get("transport") == "mtls" else ""))
+              + (f"  [rtt measurement failed: {s['rtt_measurement_error']}]" if s.get("rtt_measurement_error") else "")
+              + (f"  [{s['link_measurement_error']}]" if s.get("link_measurement_error") else ""))
     planned = expl.get("planned_latency_budget")
     if planned:
         print(f"  planned:   {planned.get('per_token_ms')} ms/token ({planned.get('tokens_per_s')} tokens/s) "
@@ -329,6 +370,9 @@ def main() -> None:
     d.add_argument("--allow-subset", action="store_true", help="let the planner leave devices out")
     d.add_argument("--timeout", type=float, default=3600)
     sub.add_parser("status")
+    sub.add_parser("network")
+    bt = sub.add_parser("bandwidth-test")
+    bt.add_argument("device", help="device name as shown by `devices`, or its id")
     q = sub.add_parser("ask")
     q.add_argument("prompt")
     q.add_argument("--max-tokens", type=int, default=64)
@@ -340,7 +384,8 @@ def main() -> None:
     a = ap.parse_args()
     {"setup": cmd_setup, "login": cmd_login, "code": cmd_code, "metrics-key": cmd_metrics_key,
      "devices": cmd_devices, "deploy": cmd_deploy,
-     "status": cmd_status, "ask": cmd_ask, "bench": cmd_bench, "policy": cmd_policy}[a.cmd](a)
+     "status": cmd_status, "ask": cmd_ask, "bench": cmd_bench, "policy": cmd_policy, "network": cmd_network,
+     "bandwidth-test": cmd_bandwidth_test}[a.cmd](a)
 
 
 if __name__ == "__main__":

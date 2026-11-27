@@ -1,7 +1,8 @@
 """Request and response schemas. Unknown fields are rejected (spec 9.2)."""
+import ipaddress
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from ..domain.access import Visibility
 
@@ -104,6 +105,20 @@ class Hardware(Strict):
     idle_source: Literal["win32", "iokit", "logind", "tty", "none"] = "none"
 
 
+def _subnet(v: str) -> str:
+    try:
+        if "/" not in v:
+            raise ValueError
+        return str(ipaddress.ip_network(v, strict=True))
+    except ValueError as e:
+        raise ValueError("subnet must be a network address with a prefix, such as 10.1.2.0/24") from e
+
+
+class NetworkId(Strict):
+    """The subnet of the interface the node uses to reach this coordinator (S5.1). Never the host address."""
+    subnet: Annotated[str, Field(max_length=49), AfterValidator(_subnet)]
+
+
 class Capabilities(Strict):
     os: str = Field(max_length=40)
     arch: str = Field(max_length=40)
@@ -116,6 +131,7 @@ class Capabilities(Strict):
     battery_pct: float | None = Field(default=None, ge=0, le=100)
     decode_probe: DecodeProbe | None = None
     hardware: Hardware | None = None  # absent from simulated nodes and agents older than S3.3
+    network: NetworkId | None = None  # absent from simulated nodes and agents older than S5.1
 
 
 class Policy(Strict):
@@ -262,7 +278,31 @@ class ErrorsRecord(Strict):
     counts: dict[ErrorCode, Annotated[int, Field(ge=1)]] = Field(max_length=200)
 
 
-TelemetryRecord = Annotated[IdleRecord | StateRecord | LidRecord | HealthRecord | ErrorsRecord,
+class NetEdgeRecord(Strict):
+    """One network measurement from this node to a peer node or to the coordinator (S5.1, S5.2; PROJECT_PLAN
+    §6 NetEdge). `dst` is the peer's device ID, or "coordinator". The RTT probe and the bandwidth test run on
+    different schedules, so a record carries the RTT pair, the bandwidth, or both."""
+    kind: Literal["net_edge"]
+    ts: AwareDatetime
+    dst: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    method: Literal["tcp", "tunnel", "tunnel_bulk", "iperf3_lab"]
+    rtt_ms_p50: float | None = Field(default=None, ge=0, le=60_000)
+    rtt_ms_p95: float | None = Field(default=None, ge=0, le=60_000)
+    bandwidth_mbps: float | None = Field(default=None, ge=0, le=1_000_000)
+    samples: int | None = Field(default=None, ge=1, le=100_000)
+
+    @model_validator(mode="after")
+    def _measured(self):
+        if self.rtt_ms_p50 is None and self.bandwidth_mbps is None:
+            raise ValueError("a net_edge record needs rtt_ms_p50, bandwidth_mbps or both")
+        if (self.rtt_ms_p50 is None) != (self.rtt_ms_p95 is None):
+            raise ValueError("rtt_ms_p50 and rtt_ms_p95 come together")
+        if self.rtt_ms_p50 is not None and self.rtt_ms_p95 < self.rtt_ms_p50:
+            raise ValueError("rtt_ms_p95 cannot be below rtt_ms_p50")
+        return self
+
+
+TelemetryRecord = Annotated[IdleRecord | StateRecord | LidRecord | HealthRecord | ErrorsRecord | NetEdgeRecord,
                             Field(discriminator="kind")]
 
 

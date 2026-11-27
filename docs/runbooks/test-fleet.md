@@ -66,6 +66,10 @@ to other projects there.
 - **Agents** are enrolled with `--backend-digest llama.cpp-v0.9.0`:
   - dev PC: `--worker-bin ...\ggml-rpc-server.exe --worker-port 50052`, on loopback with no tunnel;
   - Linux: add `--tunnel-listen 0.0.0.0:50100 --tunnel-advertise 10.100.10.19:50100`.
+- **Decode probe (S5.6):** nothing to pass. Each agent uses `llama-bench` beside `--worker-bin` and downloads the
+  reference model from the coordinator once (about 530 MB, into its cache). It benchmarks when the governor
+  allows contribution, so step away from the machine (or lock it) for `idle_after_s` before deploying, and check
+  that each stage in the `deploy` output shows `bw=... (decode_probe)`.
 - **Then** follow [the legacy runbook](../legacy-difa/testing/three_machine_test.md) from step 1, using
   `pilot devices`, `deploy`, `ask`, `bench` and the 4a–4f checks.
 

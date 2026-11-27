@@ -81,9 +81,31 @@ class Contribution(_Strict):
 
 
 class Probes(_Strict):
-    rtt_every_s: int = Field(300, ge=10)
-    bandwidth_every_h: float = Field(24, gt=0)
+    """How often network figures are refreshed. Most nodes are desktops that never move, so figures are
+    recorded on change (first figure, new subnet, a large RTT change) and otherwise only rarely (S5.1)."""
+    rtt_refresh_h: float = Field(24, gt=0, le=24 * 30)
+    rtt_change_pct: float = Field(50, gt=0, le=1000)
+    bandwidth_every_h: float = Field(168, gt=0)
     bandwidth_off_hours_only: bool = True
+    # Off-hours for the slow bandwidth refresh, in the coordinator's local time; weekends count all day (S5.2).
+    off_hours_start: str = "20:00"
+    off_hours_end: str = "07:00"
+    bandwidth_test_mb: int = Field(8, ge=1, le=64)  # bytes each way per test, in MiB
+
+    @field_validator("off_hours_start", "off_hours_end")
+    @classmethod
+    def _hhmm(cls, v: str) -> str:
+        if not _HHMM.match(v):
+            raise ValueError(f"times are 24-hour HH:MM; got {v!r}")
+        return v
+
+
+class Clusters(_Strict):
+    """When nodes share a network cluster (S5.4, D-22)."""
+    max_rtt_ms: float = Field(5.0, gt=0, le=1000)
+    min_mbps: float = Field(100.0, ge=0)
+    max_age_h: float = Field(72, gt=0, le=24 * 30)
+    recompute_every_s: int = Field(300, ge=10, le=86_400)
 
 
 class Fleet(_Strict):
@@ -113,6 +135,7 @@ class SiteConfig(_Strict):
     idle: Idle = Idle()
     contribution: Contribution = Contribution()
     probes: Probes = Probes()
+    clusters: Clusters = Clusters()
     fleet: Fleet = Fleet()
     queue: Queue = Queue()
     # Directory of the file it was loaded from; relative paths (the log file) resolve against it.

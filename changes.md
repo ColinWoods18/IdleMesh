@@ -15,6 +15,97 @@ and why.
 
 ---
 
+## 2026-11-27 — Sprint 5: network graph, clusters by subnet, decode probe, bandwidth test, network view
+
+Status: **on branch `sprint-5`.** Story-by-story status is in
+[Sprints.md](Sprints.md#sprint-5--network-probes-and-the-network-graph).
+
+### What changed
+
+| Story | Change |
+|---|---|
+| S5.4 | New coordinator package `graph/`. `network.py` combines measurements into links (for each direction, the newest value of each field; then the higher RTT and lower bandwidth of the two directions), applies the threshold rule, finds connected components and gives clusters stable IDs (a cluster keeps the ID most of its members had; larger clusters choose first). `service.py` recomputes clusters over enrolled, unrevoked devices every `clusters.recompute_every_s` and logs each node that changes cluster. Edges to the coordinator are stored but do not join nodes. |
+| S5.4 | Agents can upload `net_edge` telemetry records (`dst` = peer device ID or `coordinator`, `method`, RTT p50/p95, bandwidth, sample count). They are stored in `net_edges` under pseudonymous node keys, deduplicated on retry, pruned with the other telemetry, and need the owner's **diagnostics** consent. `NetEdge` added to the telemetry proto draft. |
+| S5.4 | `GET /api/v1/groups/{id}/network` (group administrators): devices with their cluster, measured links with `joins` (whether the link passes the threshold), and clusters. Node keys never leave the coordinator. |
+| S5.4 | Site config section `clusters` (`max_rtt_ms`, `min_mbps`, `max_age_h`, `recompute_every_s`). |
+| S5.1 | The agent reports `network.subnet` in its capabilities: the network address and prefix of the interface it uses to reach the coordinator (never its own address), rechecked every minute and logged when it changes. The coordinator records the subnet in `node_networks` and the heartbeat-timed RTT to itself in `net_edges` (method `heartbeat`), **only on change**: the first figure, a new subnet, a change of more than 50% and 1 ms, or the daily refresh (`probes.rtt_refresh_h`). A steady desktop costs about one row a day. Needs diagnostics consent. |
+| S5.1 | Clusters never span subnets (D-24). Within a subnet, pairs with no direct measurement get a **relayed** link: the sum of both nodes' RTT to the coordinator, an upper bound on their direct path. The admin network view shows each device's subnet and coordinator RTT, and each link's `source` (`measured` or `relayed`). |
+| S5.1 | Site config `probes`: `rtt_every_s` (never used) replaced by `rtt_refresh_h` (24) and `rtt_change_pct` (50); `bandwidth_every_h` default 24 → 168. `clusters.max_age_h` default 48 → 72 (three refreshes). |
+| S5.6 | Agent `decode.rs`: llama-bench is found beside `--worker-bin` when `--decode-probe-bench` is not given. Without `--decode-probe-model`, the agent takes the reference model the coordinator offers (`decode_probe_model` in the heartbeat reply, sent only to a worker with no probe result yet), downloads it from `GET /api/v1/devices/{id}/probe-model` into `<cache>/probe/`, verifies size and SHA-256, and reuses it on later starts. The benchmark waits until the governor level is above 0 for a reason other than user activity, and no deployment is assigned (D-23). New error code `PROBE_MODEL_UNAVAILABLE`. |
+| S5.2 | Agent `bulk.rs`: the worker tunnel answers a built-in bandwidth test. A connection whose first byte after the TLS handshake is `0xB7` (never a llama.cpp RPC command) is served by the agent and never reaches the worker; any other connection goes to the worker with its first byte intact. Frames: upload n bytes (the agent replies with the bytes and microseconds it timed), download n bytes (the coordinator times them), done. At most 64 MiB per transfer, 256 MiB and 120 s per test, one test at a time. |
+| S5.2 | Coordinator `TunnelManager.measure_bandwidth`: 1 MiB each way to open the TCP window, then `probes.bandwidth_test_mb` (8 MiB) up and down; each receiver times from its first byte, and the planning figure is the slower direction. `graph/links.py` decides when a test is due and stores it in `net_edges` (method `tunnel_test`, which agents cannot upload). `api/netprobe.py` runs a sweep once a minute, on its own task, one node at a time (D-27). |
+| S5.2 | `POST /api/v1/groups/{id}/devices/{device}/bandwidth-test` (administrators): test a link now, under the same rules except off-hours. `GET /api/v1/groups/{id}/network/probes`: each device's figure, whether a test is due, what blocks one, and the last result. The network view gains `coordinator_mbps` per node. `pilot.py` gains `network` and `bandwidth-test`, and `deploy` shows each stage's link. |
+| S5.2 | Site config `probes`: `off_hours_start` (20:00) and `off_hours_end` (07:00), coordinator local time, weekends all day; `bandwidth_test_mb` (8). `bandwidth_every_h` (168) and `bandwidth_off_hours_only` (true) now apply. |
+| S5.3 | Placement fills each device's `link_mbps` from its newest tunnel test (newer than 3 x `bandwidth_every_h`). That is the link from the worker to the head (the coordinator's llama-server), as the S5.1 follow-up asked. The per-token traffic term (0.62 MB per remote stage) now counts in the stage's `est_network_ms` and in the latency score. A remote stage with no figure is timed at load (4 MiB each way, kept in memory only without diagnostics consent), and `latency_budget.links_unmeasured` lists any still missing. No test shares a link with a deployment, a load or a prefetch. |
+| S5.5 | New error codes `NET_PROBE_FAILED`, `NET_PROBE_REFUSED` and `LINK_DEGRADED`. `LINK_DEGRADED` is logged when a test is below half the last one, or when a heartbeat RTT rises by more than `probes.rtt_change_pct` (and 1 ms) on the same network. The coordinator's counts reach `error_events` as before. |
+| S5.5 | Metrics endpoints `network-links` (figures over time, optionally one method), `network-nodes` (subnet, cluster, newest figures) and `network-graph` (node-graph frames); `errors` takes `codes` (a list, or `network`). The Grafana dashboard gains a **Network (S5)** row: cluster map, nodes-and-links table, link bandwidth, RTT, probe health. |
+
+Database schema version 5: `net_edges` and `node_clusters`. New coordinator dependency: networkx (BSD-3-Clause).
+No new error codes for S5.4 (a failed recompute is logged as `INTERNAL` and never stops the liveness monitor). No schema change for S5.2 and S5.3: tests are `net_edges` rows.
+
+### Decisions
+
+| ID | Decision | Why | Status |
+|---|---|---|---|
+| D-22 | **Clusterer v0: a networkx threshold graph, split into connected components, with first-guess thresholds.** A link joins two nodes when its median RTT is ≤ 5 ms and, once measured, its bandwidth is ≥ 100 Mbps; measurements older than 48 h are ignored. All four values are site settings. | PROJECT_PLAN names networkx, and a later clusterer can switch to community detection on the same graph. networkx is coordinator-only, so nodes are unaffected (D-07). The thresholds are a guess for a campus LAN, to be tuned against the building layout in the S5 demo. | Proposed |
+| D-24 | **One dedicated coordinator per network, and clusters follow networks.** Each network (subnet) has its own coordinator machine; nodes on that subnet form its clusters and never join a cluster on another subnet. Coordinators reach the coordinators of other networks to exchange work, for example to hand a request to another network's cluster and return the result when the work there has finished (federation, S8.10). Work leaves a network when the local cluster is busy or too small for the model (Colin). Where a student's request enters is still open. | Colin, 2026-11-27. Within a network the paths are short and stable, so a node's RTT to its own coordinator is a good local figure, and the subnet is a boundary every node can report without new trust between nodes. Work crosses networks only between coordinators. | Colin |
+| D-26 | **Chats are ephemeral until sign-in exists, then stored per user.** For now a student's chat disappears when they leave (no history kept). With sign-in (S9.1), chats are stored per user and persist across sessions, under the S9.5 retention rules. In federation (S8.10) chat history stays with the coordinator the student used, never with the network that ran the work. Today's DIFA groups keep branches for `retention_days` (30); that changes with S9.2 and S9.5. | Colin, 2026-11-27. | Colin |
+| D-25 | **Network figures are recorded on change, not scanned.** RTT comes from heartbeats the agent already sends, and is stored only on change or once a day. Node-to-node peer probes come later, off by default, run on events (enrollment, a network change, an admin request) and only between likely neighbours on one subnet; their figures replace relayed ones. | Colin, 2026-11-27: most nodes are desktops fixed in one place, so a constant scan wastes node resources (D-12) for figures that rarely change. Relayed figures need no open port or peer trust on nodes (D-07). | Colin |
+| D-23 | **Every worker runs the decode probe, with nothing to configure.** The agent uses llama-bench beside its worker binary, and the coordinator offers the catalog reference model (Qwen2.5-0.5B Q8, Apache-2.0) in the heartbeat reply. The agent downloads it once over the pinned channel, checks its SHA-256 and keeps it in its cache. The benchmark runs on its own thread, only while the governor would let the node contribute and no deployment is assigned; this now applies to the command-line flags too. | S4.7: CPU workers were planned from the memory-copy figure (34.1 GB/s on the dev PC against 27.6 GB/s measured by decoding). One-click nodes (D-07) cannot be asked to find a model file. The probe model is chosen by the operator for measurement, not offered to users, so it falls under D-10's exception for models we choose. A benchmark must not compete with the owner (D-12). | Proposed |
+| D-27 | **The bandwidth test runs inside the worker tunnel, between each node and its coordinator, on events.** The agent serves it (no extra software, D-07), only the pinned coordinator can start it, and it never touches the worker. A test is due when a worker is first reachable or the node changes network, and then every `probes.bandwidth_every_h` in off-hours; an administrator can ask for one. Every test waits for the governor (level above 0 for a reason other than user activity), needs diagnostics consent to be stored, and never shares a link with a deployment. Node-to-node tests (peer probes) wait. | With llama.cpp RPC every token crosses only node-to-head links, and the head is the coordinator, so this one figure is the one placement needs. Most nodes are fixed desktops, so a weekly figure is enough (D-25), and a new or moved node is tested at once because placement otherwise leaves its traffic out. Peer probes need trust between nodes and two nodes that can reach each other, which the campus network blocks for the current machines. | Proposed |
+
+### How it was verified
+
+- Unit tests (`test_graph.py`): direction combining, newest value per field, the threshold rule, components through
+  a third node, ID stability through joins, leaves, merges and splits, and recompute against the store (stale,
+  coordinator and revoked-node edges left out).
+- API tests (`test_network_graph.py`): uploads become clusters in the admin view, keys are pseudonymous, retries
+  are ignored, diagnostics consent is required, bad records are refused, and only admins see the view.
+- No real measurements yet: those come from the agent prober (S5.1).
+- S5.6: Rust unit tests (exact-length copy with SHA-256, too many or too few bytes refused and cleaned up, offered
+  names cannot leave the probe directory, a verified copy is reused, llama-bench found beside the worker). API tests
+  (offer only to an unprobed worker, fetch needs that device's token, no offer without the model file). Live test
+  with a real agent and llama.cpp on the dev PC: llama-bench found beside the worker, the 530 MB model downloaded
+  and verified, and not downloaded again on the next start.
+- **What the probe changes, from the S4.7 results.** llama-bench on the dev PC (4 threads) decodes the reference
+  model at 52.6 tokens/s, or 27.6 GB/s, against the 34.1 GB/s memory-copy figure the planner used.
+  - Two-machine run: the dev PC's stage (509 MB) becomes 18.4 ms instead of 14.9, so the prediction moves from
+    −34.5% to about −26%, inside ±30%.
+  - Three-machine run: the CPU workers held one layer each, so the probe changes almost nothing (about 0.1 ms).
+    The missing ~22 ms/token is mostly the per-token traffic over three remote links (0.62 MB per stage per
+    token), which placement leaves out while `link_mbps` is unmeasured. That needs S5.2 and S5.3; S5.6 alone
+    cannot meet its ±30% acceptance on this run.
+- S5.2: Rust unit tests (upload and download round trip, limits, unknown version, a closed connection). Live tests with the real agent (`test_bandwidth_agent.py`): through a relay capped at 50 and 200 Mbps the figure is within 15% (measured 49.7 and 197.3 by hand); a stranger's certificate is refused; llama.cpp RPC still passes through the tunnel before and after a test (real rpc-server).
+- S5.2, S5.3, S5.5: unit tests (`test_links.py`: off-hours across midnight and weekends, when a test is due, storage, degradation by bandwidth and by RTT, old figures ignored, tunnel rows kept out of relayed links, the traffic term in the score and the budget, a link timed at load). API tests (`test_network_probes.py`: the sweep tests a new worker once; skips a node at the keyboard, without consent or without a tunnel; a failure is counted and not retried for an hour; the admin trigger and its refusals; placement with a stored figure and with one timed at load; the network metrics and the `codes=network` filter).
+- **End to end on the dev PC:** one agent worker holding the whole model, reached through the capped relay ([results](experiments/llamacpp-feasibility/results/s5-link-loopback-20261127.md)). At 60 Mbps the prediction moves from 19 to 127 ms/token against 166 measured (−23%); at 150 Mbps, 77 against 150 (−49%). The relay adds about 29 ms RTT on Windows (timer resolution), so this run checks the measurement, not the acceptance.
+- Not checked: real links, Wi-Fi, and the Grafana panels rendered. See [docs/runbooks/sprint5-hardware-checks.md](docs/runbooks/sprint5-hardware-checks.md).
+
+### Follow-ups
+
+- S5.1: unit tests for relayed links (same subnet only, direct figures win), the subnet rule (no cluster spans
+  subnets; no known subnet, no cluster), relayed clusters from the store, and change-only recording (first figure,
+  small and large changes, a network change, the daily refresh, two heartbeats in one clock tick). API tests: five
+  devices on two subnets give two clusters from one row each; a host address or missing prefix is refused; no
+  figures are recorded without diagnostics consent. Rust: subnet masking (IPv4 and IPv6) and the loopback case.
+  On the dev PC the agent reports `10.0.0.0/24`.
+- Placement now checks the head's own links (S5.3): the head is the coordinator, and each stage's link to it
+  is tested.
+- **Hardware checks** for S5.2, S5.3, S5.5 and S5.6, in order, in
+  [docs/runbooks/sprint5-hardware-checks.md](docs/runbooks/sprint5-hardware-checks.md). The S5.3 and S5.6
+  acceptance is the three-machine re-run there.
+- Five live tests failed on the Windows dev PC before and after this work (`test_llamacpp` twice, `test_tunnel`,
+  `test_prefetch`, `test_agent_worker`): they put the coordinator's own stage on "Mac Studio", and the runtime
+  starts llama-server with `-dev MTL0` (Metal), which this PC does not have. They are now skipped unless the
+  coordinator runs on macOS (`needs_metal_head` in `tests/integration/live.py`). `test_diagnostics_agent`'s crashing-worker
+  test, flaky on Windows, is skipped there. A CPU head needs its own split rule (this llama.cpp build refuses
+  `-dev CPU`); set that up later, then remove the skips.
+- Peer probes (D-25, D-27): a design sketch is at the end of the hardware-checks runbook. The first
+  cross-machine check of relayed clusters is step 4 there.
+- Federation between per-network coordinators (D-24) needs a design: see S8.10.
+- The probe runs once per agent start. A re-probe after a llama.cpp upgrade comes with the update channel (S10).
+
+---
+
 ## 2026-11-20 — Sprint 4: config enrollment, crash reports, diagnostics, OS limits, governor
 
 Status: **on branch `sprint-4` (PR #6, stacked on Sprint 3).** Story-by-story status is in

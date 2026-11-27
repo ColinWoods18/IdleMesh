@@ -28,7 +28,8 @@ class DeviceProfile:
     paused: bool = False
     stability: float = 1.0       # fraction of recent heartbeats received
     endpoint: str | None = None  # inference worker address reported by the agent, if it runs one
-    link_mbps: float | None = None   # measured path bandwidth to the coordinator, if known
+    link_mbps: float | None = None   # bandwidth of the link to the coordinator (the head), from its tunnel test
+    link_source: str | None = None   # "tunnel_test" when link_mbps was timed through the worker tunnel (S5.2)
     bandwidth_source: str = "reported"   # "decode_probe" when derived from timed decoding (FR 06)
     not_ready_reason: str | None = None
     node_state: str | None = None    # idle, active, sleeping, draining or serving, as the agent last reported (S2.5)
@@ -118,11 +119,20 @@ def _layer_capacity(d: DeviceProfile, m: ModelSpec, p: PlacementPolicy, head: bo
     return max(0, usable // _per_layer_bytes(m, p))
 
 
-def _score(d: DeviceProfile, peers: list[DeviceProfile], w: dict) -> dict:
+def stage_network_ms(rtt_ms: float, link_mbps: float | None, cost: "BackendCost") -> float:
+    """Per-token network time of one remote stage: its round trips, plus its per-token traffic over the link to
+    the head when that link's bandwidth is known (S5.3)."""
+    traffic = cost.bytes_per_token_per_remote * 8 / (link_mbps * 1e6) * 1000 if link_mbps else 0.0
+    return cost.round_trips_per_token * rtt_ms + traffic
+
+
+def _score(d: DeviceProfile, peers: list[DeviceProfile], p: "PlacementPolicy") -> dict:
+    w = p.weights
     max_bw = max(x.mem_bandwidth_gbps for x in peers) or 1.0
     parts = {
         "bandwidth": d.mem_bandwidth_gbps / max_bw,
-        "latency": 1.0 / (1.0 + d.rtt_ms / 50.0),
+        # A slow link costs every token, as a long round trip does (S5.3).
+        "latency": 1.0 / (1.0 + stage_network_ms(d.rtt_ms, d.link_mbps, p.backend_cost) / 50.0),
         "power": {"ac": 1.0, "battery": 0.3}.get(d.power, 0.0),
         "stability": d.stability,
     }
@@ -150,7 +160,7 @@ def plan(devices: list[DeviceProfile], model: ModelSpec, policy: PlacementPolicy
         else:
             eligible.append(d)
 
-    scored = sorted(((d, _score(d, eligible, policy.weights)) for d in eligible),
+    scored = sorted(((d, _score(d, eligible, policy)) for d in eligible),
                     key=lambda x: (-x[1]["total"], x[0].device_id))
     explanation["scores"] = [{"device_id": d.device_id, **s} for d, s in scored]
     explanation["single_device_fit"] = [d.device_id for d, _ in scored
@@ -190,7 +200,7 @@ def plan(devices: list[DeviceProfile], model: ModelSpec, policy: PlacementPolicy
             "headroom_bytes": d.budget_bytes - int(d.budget_bytes * (1 - policy.headroom_fraction)),
             "budget_bytes": d.budget_bytes, "margin_bytes": _usable_bytes(d, model, policy) + model.runtime_overhead_bytes - need,
             "est_compute_ms": round(weights / (d.mem_bandwidth_gbps * GB) * 1000, 2),
-            "rtt_ms": d.rtt_ms, "rtt_source": d.rtt_source, "link_mbps": d.link_mbps,
+            "rtt_ms": d.rtt_ms, "rtt_source": d.rtt_source, "link_mbps": d.link_mbps, "link_source": d.link_source,
         })
         start += n
     assert start == model.layers and all(s["margin_bytes"] >= 0 for s in stages) and per_layer > 0
@@ -215,34 +225,36 @@ def latency_budget(stages: list[dict], local: str, cost: BackendCost) -> dict:
     for s in stages:
         s["est_network_ms"] = 0.0
     for s in remote:
-        link = s.get("link_mbps")
-        s["est_network_ms"] = round(cost.round_trips_per_token * s["rtt_ms"] + (
-            cost.bytes_per_token_per_remote * 8 / (link * 1e6) * 1000 if link else 0), 2)
+        s["est_network_ms"] = round(stage_network_ms(s["rtt_ms"], s.get("link_mbps"), cost), 2)
     compute_ms = sum(s["est_compute_ms"] for s in stages)
     network_ms = sum(s["est_network_ms"] for s in stages)
     overhead_ms = (cost.first_remote_ms + cost.extra_remote_ms * (len(remote) - 1)) if remote else 0.0
     token_ms = compute_ms + network_ms + overhead_ms
     sources = sorted({s.get("rtt_source", "heartbeat") for s in remote})
+    unmeasured = [s["device_id"] for s in remote if not s.get("link_mbps")]
     return {
         "compute_ms": round(compute_ms, 2), "network_ms": round(network_ms, 2),
         "backend_overhead_ms": round(overhead_ms, 2), "remote_stages": len(remote),
         "per_token_ms": round(token_ms, 2), "tokens_per_s": round(1000 / token_ms, 2) if token_ms else None,
         "dominant_stage": max(stages, key=lambda s: s["est_compute_ms"] + s["est_network_ms"])["device_id"],
         "rtt_source": "+".join(sources) if sources else None,
+        "links_unmeasured": unmeasured,
         "backend_cost": asdict(cost),
         "basis": ("weights/effective bandwidth + fitted backend overhead + round trips and per-token "
                   "traffic per remote stage; link bandwidth term omitted where unmeasured"),
     }
 
 
-def reestimate_with_path_rtt(explanation: dict, measured: dict[str, dict], cost: BackendCost | None = None) -> dict:
-    """Replace heartbeat RTTs with round trips timed through the worker tunnel, and recompute the budget.
+def reestimate_with_path_rtt(explanation: dict, measured: dict[str, dict], cost: BackendCost | None = None,
+                             links: dict[str, dict] | None = None) -> dict:
+    """Replace heartbeat RTTs with round trips timed through the worker tunnel, fill link bandwidths timed by the
+    tunnel's bandwidth test (`links`, S5.3), and recompute the budget.
 
     Heartbeat RTT includes HTTP and coordinator request handling, so it overstates the network path a
     token takes (Phase 1 Round 4: 15-18 ms by heartbeat against 9 ms by ping to the same VM). The
     prediction made at planning time is kept as `planned_latency_budget` for comparison.
     """
-    if not measured:
+    if not measured and not links:
         return explanation
     old = explanation["latency_budget"]
     cost = cost or BackendCost(**old["backend_cost"])
@@ -252,6 +264,10 @@ def reestimate_with_path_rtt(explanation: dict, measured: dict[str, dict], cost:
         if m:
             s.setdefault("planned_rtt_ms", s["rtt_ms"])
             s["rtt_ms"], s["rtt_source"], s["rtt_measurement"] = m["mean_ms"], "tunnel", m
+        b = (links or {}).get(s["device_id"])
+        if b:
+            s.setdefault("planned_link_mbps", s.get("link_mbps"))
+            s["link_mbps"], s["link_source"], s["link_measurement"] = b["mbps"], "tunnel_test", b
     local = explanation["policy"].get("local_device") or explanation["stages"][-1]["name"]
     explanation["latency_budget"] = latency_budget(explanation["stages"], local, cost)
     return explanation

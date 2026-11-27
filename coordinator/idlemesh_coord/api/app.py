@@ -13,8 +13,8 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from .. import obs, partition, telemetry
-from ..catalog import CATALOG, MODEL_FILES
+from .. import graph, obs, partition, telemetry
+from ..catalog import CATALOG, MODEL_FILES, PROBE_MODEL
 from ..config import Settings
 from ..domain.access import Branch, ForkError, Principal, Role, Scope, Visibility, can_create_with_visibility, \
     can_delete_branch, can_read_branch, can_write_branch, plan_fork
@@ -28,7 +28,7 @@ from ..security import Passwords, fingerprint, matches, new_id, new_secret, veri
 from ..store import Store, iso, now, parse
 from ..tokens import context_tokens
 from ..transport import CoordinatorIdentity, TunnelError, TunnelManager, cert_fingerprint, is_certificate
-from . import compat, diagnostics, errors, metrics
+from . import compat, diagnostics, errors, metrics, netprobe
 from .auth import SESSION_COOKIE, bearer, current, device_by_token, require_admin, require_group, require_session
 from .errors import ApiError, not_found
 from .schemas import (CodeIn, ConversationIn, CreateGroupIn, CredentialIn, DeploymentIn, EnrollIn, ForkIn,
@@ -75,6 +75,7 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
     app.state.control_fingerprint = (cert_fingerprint(open(settings.control_cert).read())
                                      if settings.control_cert else None)
     app.state.path_rtt = {}  # device_id -> (mean ms through the worker tunnel, monotonic time measured)
+    netprobe.init(app)  # bandwidth tests through node tunnels (S5.2)
     app.state.passwords = Passwords(settings.argon2_fast)
     app.state.node_keys = telemetry.NodeKeys(os.path.dirname(os.path.abspath(settings.db_path)),
                                              settings.pseudonymize_nodes)
@@ -115,6 +116,7 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
     compat.register(app)
     metrics.register(app)
     diagnostics.register(app)
+    netprobe.register(app)
     return app
 
 
@@ -150,11 +152,46 @@ def _restore_deployments(app) -> None:
         c.execute("UPDATE deployments SET state = 'unavailable' WHERE state = 'ready'")
 
 
+_UNSET = object()
+
+
+def probe_offer(app) -> dict | None:
+    """The decode-probe model this coordinator can serve (S5.6), or None. Worked out once: the runtime
+    verifies the file's SHA-256 the first time, which takes a moment for a large file."""
+    offer = getattr(app.state, "probe_offer", _UNSET)
+    if offer is _UNSET:
+        offer = None
+        meta, model_path = MODEL_FILES.get(PROBE_MODEL), getattr(app.state.runtime, "model_path", None)
+        if meta and model_path:
+            try:
+                path = model_path(PROBE_MODEL)
+                offer = {"catalog": PROBE_MODEL, "file": meta["file"], "sha256": meta["sha256"],
+                         "nbytes": path.stat().st_size, "license": meta["license"],
+                         "url": "/api/v1/devices/{device_id}/probe-model"}
+            except RuntimeFailure as e:
+                obs.log(log, logging.WARNING, "decode-probe model unavailable; workers keep the memory-copy figure",
+                        error_code="PROBE_FAILED", reason=e.code)
+        app.state.probe_offer = offer
+    return offer
+
+
+def cluster_policy(settings: Settings) -> graph.ClusterPolicy:
+    return graph.ClusterPolicy(max_rtt_ms=settings.cluster_max_rtt_ms, min_mbps=settings.cluster_min_mbps)
+
+
+def recompute_clusters(app) -> dict:
+    """Recompute the network clusters over every enrolled, unrevoked device (S5.4)."""
+    store, settings, keys = app.state.store, app.state.settings, app.state.node_keys
+    nodes = [keys.key(r["id"]) for r in store.all("SELECT id FROM devices WHERE status != 'revoked'")]
+    return graph.recompute(store, nodes, cluster_policy(settings), settings.cluster_max_age_h)
+
+
 async def _liveness_monitor(app) -> None:
     """Stop using a deployment as soon as a required device misses heartbeats (FR 04, spec 10)."""
     store, sched, settings = app.state.store, app.state.scheduler, app.state.settings
     next_prune = 0.0
     next_error_flush = time.monotonic() + 60
+    next_clusters = time.monotonic() + 5
     while True:
         await asyncio.sleep(1)
         if time.monotonic() >= next_error_flush:  # the coordinator's own error counts, once a minute (S3.6)
@@ -164,6 +201,16 @@ async def _liveness_monitor(app) -> None:
                                         settings.org_id, settings.site_id)
             except Exception:  # noqa: BLE001 - never let metrics stop the liveness monitor
                 log.exception("cannot record error counts", extra={"error_code": "INTERNAL"})
+        if time.monotonic() >= next_clusters:  # network clusters (S5.4)
+            next_clusters = time.monotonic() + settings.cluster_every_s
+            try:
+                await run_in_threadpool(recompute_clusters, app)
+            except Exception:  # noqa: BLE001 - clustering must never stop the liveness monitor
+                log.exception("cannot recompute clusters", extra={"error_code": "INTERNAL"})
+        try:  # bandwidth tests through node tunnels (S5.2): starts at most one a minute, on its own task
+            netprobe.maybe_sweep(app)
+        except Exception:  # noqa: BLE001 - never let probes stop the liveness monitor
+            log.exception("cannot start the bandwidth sweep", extra={"error_code": "INTERNAL"})
         if time.monotonic() >= next_prune:  # telemetry retention (S2.3), hourly
             next_prune = time.monotonic() + 3600
             try:
@@ -218,13 +265,18 @@ def _fail_deployment(store: Store, group_id: str, dep_id: str, code: str, detail
 async def load_now(app, group_id: str, dep_id: str, explanation: dict, member_id: str | None) -> dict:
     """Open tunnels, load the backend, and make the deployment current. Marks it failed on error."""
     store = app.state.store
+    stage_ids = {s["device_id"] for s in explanation["stages"]}
+    app.state.loading_devices |= stage_ids  # no bandwidth test may share these links while weights load
     try:
+        await netprobe.wait_idle(app, stage_ids)
         await open_tunnels(app, store, dep_id, explanation)
         loaded = await app.state.runtime.load_deployment(dep_id, explanation)
     except RuntimeFailure as e:
         await run_in_threadpool(app.state.tunnels.close, dep_id)
         _fail_deployment(store, group_id, dep_id, e.code)
         raise
+    finally:
+        app.state.loading_devices -= stage_ids
     with store.tx() as c:
         # Store the plan as loaded (transport and loopback forwarder per stage), not as first planned.
         c.execute("UPDATE deployments SET state = 'ready', placement = ? WHERE id = ?", (json.dumps(explanation), dep_id))
@@ -279,10 +331,11 @@ async def open_tunnels(app, store: Store, deployment_id: str, explanation: dict)
     """Route every remote stage whose agent runs the mTLS tunnel through a loopback forwarder."""
     local = getattr(app.state.runtime, "local_device", None)
     measured: dict[str, dict] = {}
+    tested: dict[str, dict] = {}
     for st in explanation["stages"]:
         if st["name"] == local or not st.get("endpoint"):
             continue
-        d = store.one("SELECT public_key, capabilities FROM devices WHERE id = ?", (st["device_id"],))
+        d = store.one("SELECT * FROM devices WHERE id = ?", (st["device_id"],))
         worker = json.loads(d["capabilities"]).get("worker") or {}
         st["transport"] = worker.get("transport", "plaintext")
         if st["transport"] != "mtls":
@@ -298,13 +351,19 @@ async def open_tunnels(app, store: Store, deployment_id: str, explanation: dict)
             app.state.path_rtt[st["device_id"]] = (measured[st["device_id"]]["mean_ms"], time.monotonic())
         except TunnelError as e:
             st["rtt_measurement_error"] = str(e)
+        if st.get("link_mbps") is None:  # no figure for this link yet (S5.3): time it before the weights load
+            hit = await netprobe.test_at_load(app, d)
+            if hit:
+                tested[st["device_id"]] = hit
+            else:
+                st["link_measurement_error"] = "bandwidth test failed or unavailable; see NET_PROBE_FAILED"
         try:
             st["rpc_endpoint"] = await run_in_threadpool(app.state.tunnels.open, deployment_id, st["endpoint"],
                                                          d["public_key"])
         except TunnelError as e:
             await run_in_threadpool(app.state.tunnels.close, deployment_id)
             raise RuntimeFailure("TUNNEL_FAILED", f"{st['name']}: {e}") from None
-    reestimate_with_path_rtt(explanation, measured)
+    reestimate_with_path_rtt(explanation, measured, links=tested)
 
 
 def _branch(row) -> Branch:
@@ -329,7 +388,9 @@ def _planning_rtt(path_rtt: dict | None, device_id: str, heartbeat_rtt: float) -
     return heartbeat_rtt, "heartbeat"
 
 
-def _profiles(store: Store, group_id: str, settings: Settings, path_rtt: dict | None = None) -> list[DeviceProfile]:
+def _profiles(store: Store, group_id: str, settings: Settings, path_rtt: dict | None = None,
+              links: dict | None = None) -> list[DeviceProfile]:
+    """Placement inputs per device. `links` is {device_id: (mbps, source)} from bandwidth tests (S5.3)."""
     out = []
     for d in store.all("SELECT * FROM devices WHERE group_id = ?", (group_id,)):
         cap, pol = json.loads(d["capabilities"]), json.loads(d["policy"])
@@ -352,7 +413,9 @@ def _profiles(store: Store, group_id: str, settings: Settings, path_rtt: dict | 
             allow_battery=pol["allow_battery"], ready=reason is None, authorized=d["status"] == "active",
             paused=pol["paused"] or pol.get("reported_paused", False), stability=1.0,
             endpoint=worker["endpoint"] if worker and worker["state"] == "running" else None,
-            bandwidth_source=source, not_ready_reason=reason, node_state=cap.get("node_state") if fresh else None))
+            bandwidth_source=source, not_ready_reason=reason, node_state=cap.get("node_state") if fresh else None,
+            link_mbps=(links or {}).get(d["id"], (None, None))[0],
+            link_source=(links or {}).get(d["id"], (None, None))[1]))
     return out
 
 
@@ -629,9 +692,21 @@ def register(app: FastAPI) -> None:
         with S(request).tx() as c:
             c.execute("UPDATE devices SET capabilities = ?, policy = ?, last_seen = ?, consent = ? WHERE id = ?",
                       (json.dumps(caps), json.dumps(policy), iso(now()), consent, device_id))
+        if telemetry.has_consent(json.loads(consent) if consent else None, {"net_edge"}):
+            # The node's network and RTT to this coordinator (S5.1): diagnostics, recorded only on change.
+            await run_in_threadpool(
+                graph.observe, S(request), request.app.state.node_keys.key(device_id),
+                body.capabilities.network.subnet if body.capabilities.network else None, body.capabilities.rtt_ms,
+                graph.RttRule(refresh_h=settings.rtt_refresh_h, change_frac=settings.rtt_change_pct / 100),
+                settings.org_id, settings.site_id)
         g = request.app.state.scheduler.group(d["group_id"])
         stage = next((s for s in (g.placement or {}).get("stages", []) if s["device_id"] == device_id), None)
         public_policy = {k: v for k, v in policy.items() if k != "reported_paused"}
+        # A worker without a decode probe yet is told where to get the reference model (S5.6).
+        offer = None
+        if body.worker and body.capabilities.decode_probe is None:
+            offer = await run_in_threadpool(probe_offer, request.app)
+            offer = offer and {**offer, "url": offer["url"].format(device_id=device_id)}
         pending = request.app.state.prefetch.get(d["group_id"])
         manifest = pending["manifests"].get(device_id) if pending else None
         return {"policy": public_policy, "policy_rev": d["policy_rev"], "lease_s": 30,
@@ -639,6 +714,7 @@ def register(app: FastAPI) -> None:
                 # Lets the agent tag its own and its worker's log lines with the requests it is serving (D-11).
                 "active_request_ids": sorted(g.running) if stage else [],
                 "prefetch": {"deployment_id": pending["deployment_id"], **manifest} if manifest else None,
+                "decode_probe_model": offer,
                 "telemetry": {"interval_s": settings.telemetry_interval_s, "idle_after_s": settings.idle_after_s},
                 # Contribution governor settings (S4.9): the agent applies them locally, under its owner's ceiling.
                 "contribution": {"idle_after_s": settings.idle_after_s, "ramp_s": settings.ramp_s,
@@ -657,7 +733,8 @@ def register(app: FastAPI) -> None:
                                                            kinds & telemetry.IDLE_KINDS) else "idle-data collection")
             raise ApiError(403, "TELEMETRY_NO_CONSENT", f"The device owner has not consented to {what}.")
         node = request.app.state.node_keys.key(device_id)
-        return await run_in_threadpool(telemetry.ingest, S(request), node, body, settings.org_id, settings.site_id)
+        return await run_in_threadpool(telemetry.ingest, S(request), node, body, settings.org_id, settings.site_id,
+                                       request.app.state.node_keys.key)
 
     @app.get("/api/v1/groups/{group_id}/devices/{device_id}/idle", tags=["devices"])
     async def idle_timeline(group_id: str, device_id: str, request: Request, hours: float = 24,
@@ -671,6 +748,18 @@ def register(app: FastAPI) -> None:
         node = request.app.state.node_keys.key(device_id)
         out = telemetry.timeline(S(request), node, now() - timedelta(hours=hours))
         return {"device_id": device_id, "name": d["name"], "hours": hours, **out}
+
+    @app.get("/api/v1/groups/{group_id}/network", tags=["devices"])
+    async def network(group_id: str, request: Request, p: Principal = Depends(current)):
+        """The network graph of the group's devices: measured links, whether each link is fast enough to
+        join a cluster, and each device's cluster (S5.4). Group administrators only."""
+        require_group(p, group_id)
+        require_admin(p)
+        keys = request.app.state.node_keys
+        devices = {keys.key(r["id"]): {"device_id": r["id"], "name": r["name"]} for r in S(request).all(
+            "SELECT id, name FROM devices WHERE group_id = ? AND status != 'revoked'", (group_id,))}
+        return await run_in_threadpool(graph.network_view, S(request), devices, cluster_policy(settings),
+                                       settings.cluster_max_age_h, 3 * settings.bandwidth_every_h)
 
     @app.get("/api/v1/devices/{device_id}/model-file", tags=["devices"])
     async def model_file(device_id: str, request: Request):
@@ -703,6 +792,22 @@ def register(app: FastAPI) -> None:
                                  headers={"Content-Range": f"bytes {start}-{end - 1}/{path.stat().st_size}",
                                           "Content-Length": str(end - start)})
 
+    @app.get("/api/v1/devices/{device_id}/probe-model", tags=["devices"])
+    async def probe_model(device_id: str, request: Request):
+        """The decode-probe reference model (S5.6), whole, for an enrolled device over the pinned channel."""
+        _device_by_token(request, device_id)
+        offer = await run_in_threadpool(probe_offer, request.app)
+        if not offer:
+            raise ApiError(404, "PROBE_MODEL_UNAVAILABLE", "This coordinator has no decode-probe model to serve.")
+        path = request.app.state.runtime.model_path(PROBE_MODEL)
+
+        def chunks():
+            with open(path, "rb") as f:
+                while data := f.read(1 << 20):
+                    yield data
+        return StreamingResponse(chunks(), media_type="application/octet-stream",
+                                 headers={"Content-Length": str(offer["nbytes"])})
+
     @app.patch("/api/v1/devices/{device_id}/policy", tags=["devices"])
     async def update_policy(device_id: str, body: PolicyPatch, request: Request, p: Principal = Depends(current)):
         """Owners set limits; administrators may only disable. Agents also apply local ceilings (FR 07)."""
@@ -731,12 +836,14 @@ def register(app: FastAPI) -> None:
         out = []
         hardware = {d["id"]: json.loads(d["capabilities"]).get("hardware")
                     for d in S(request).all("SELECT id, capabilities FROM devices WHERE group_id = ?", (group_id,))}
-        for prof in _profiles(S(request), group_id, settings, request.app.state.path_rtt):
+        for prof in _profiles(S(request), group_id, settings, request.app.state.path_rtt,
+                              netprobe.figures(request.app)):
             state = ("unavailable" if not prof.ready else "paused" if prof.paused else
                      "incompatible" if prof.backend_digest != request.app.state.runtime.backend_digest else "ready")
             out.append({"device_id": prof.device_id, "name": prof.name, "os": prof.os, "arch": prof.arch,
                         "state": state, "budget_bytes": prof.budget_bytes, "power": prof.power,
                         "worker_running": prof.endpoint is not None, "node_state": prof.node_state,
+                        "link_mbps": prof.link_mbps,
                         "hardware": hardware.get(prof.device_id)})
         return {"devices": out}
 
@@ -755,7 +862,9 @@ def register(app: FastAPI) -> None:
             raise ApiError(409, "DEPLOYMENT_BUSY", "Wait for queued and running requests to finish.", True)
         policy = PlacementPolicy(backend_digest=request.app.state.runtime.backend_digest, require_all=body.require_all,
                                  local_device=getattr(request.app.state.runtime, "local_device", None))
-        explanation = plan(_profiles(S(request), group_id, settings, request.app.state.path_rtt), model, policy)
+        profiles = _profiles(S(request), group_id, settings, request.app.state.path_rtt,
+                             await run_in_threadpool(netprobe.figures, request.app))
+        explanation = plan(profiles, model, policy)
         if not explanation["feasible"]:
             raise ApiError(409, "PLACEMENT_INFEASIBLE", explanation.get("reason", "No feasible placement."),
                            extra={"explanation": explanation})

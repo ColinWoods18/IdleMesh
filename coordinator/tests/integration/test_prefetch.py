@@ -9,7 +9,7 @@ import json
 
 import httpx
 import pytest
-from live import (BIN, HAVE_STACK, MODELS, all_ready, coordinator, enroll_agent, free_port, mac_heartbeat,
+from live import (needs_metal_head, BIN, HAVE_STACK, MODELS, all_ready, coordinator, enroll_agent, free_port, mac_heartbeat,
                   owner_client, start_agent, stop_agents, until)
 
 from idlemesh_coord.config import Settings
@@ -32,6 +32,7 @@ def _deployment(c, gid):
     return c.get(f"/api/v1/groups/{gid}/deployment").json()
 
 
+@needs_metal_head
 def test_prefetched_head_is_loaded_from_the_device_cache(tmp_path, coordinator_source):
     rt = LlamaCppRuntime(str(BIN), str(MODELS), "Mac Studio", {}, log_dir=str(tmp_path))
     cache, log, agents = tmp_path / "hp-cache", tmp_path / "hp.log", []

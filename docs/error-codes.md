@@ -58,7 +58,11 @@ one code can be followed across components and counted in metrics.
 | `HEARTBEAT_REJECTED` | — | yes | Agent: the coordinator answered a heartbeat with an unexpected error status. |
 | `INVALID_DEVICE_KEY` | 400 | no | The device certificate sent at enrollment could not be parsed. |
 | `LEASE_EXPIRED` | — | yes | Agent: no heartbeat succeeded within the lease, so assigned work was released. |
+| `LINK_DEGRADED` | — | no | A node's link to its coordinator got much slower on the same network: bandwidth below half the last test, or RTT up by more than probes.rtt_change_pct. |
+| `NET_PROBE_FAILED` | 503 | yes | A bandwidth test through a node's worker tunnel failed or timed out (S5.2); placement leaves that link's traffic out until a test succeeds. |
+| `NET_PROBE_REFUSED` | 409 | yes | A bandwidth test cannot run now: the node is in use, busy with another test, not idle, or its owner has not consented to diagnostics. |
 | `PROBE_FAILED` | — | yes | Agent: a hardware or decode probe failed; the node reports without that measurement. |
+| `PROBE_MODEL_UNAVAILABLE` | 404 | no | The coordinator has no decode-probe reference model to serve, so workers keep the memory-copy figure. |
 | `STATE_UNREADABLE` | — | no | Agent: the state file is missing or corrupt; enroll the node again. |
 | `STATE_WRITE_FAILED` | — | no | Agent: the state file could not be written or restricted to its owner. |
 | `TELEMETRY_BUFFER_FULL` | — | no | Agent: the telemetry buffer reached its size limit and dropped its oldest records; the count is reported. |

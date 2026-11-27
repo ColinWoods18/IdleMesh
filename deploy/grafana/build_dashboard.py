@@ -59,6 +59,73 @@ def health_series(title: str, field: str, label: str, grid, unit: str, *, descri
                  options={"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}})
 
 
+def row(title: str, y: int) -> dict:
+    return {"id": next(PANEL_ID), "type": "row", "title": title, "collapsed": False,
+            "gridPos": {"x": 0, "y": y, "w": 24, "h": 1}, "panels": [], "targets": []}
+
+
+def network_panels(y: int) -> list[dict]:
+    """The network view (S5.5): the cluster map, each node's link, figures over time and probe health."""
+    graph_q = [dict(query("/api/v1/metrics/network-graph", [
+        ("id", "id", "string"), ("title", "title", "string"), ("subtitle", "subtitle", "string"),
+        ("mainstat", "mainstat", "string"), ("secondarystat", "secondarystat", "string"),
+        ("color", "color", "string")], params=[{"key": "part", "value": "nodes"}]), refId="nodes"),
+        dict(query("/api/v1/metrics/network-graph", [
+            ("id", "id", "string"), ("source", "source", "string"), ("target", "target", "string"),
+            ("mainstat", "mainstat", "string"), ("secondarystat", "secondarystat", "string")],
+            params=[{"key": "part", "value": "edges"}]), refId="edges")]
+    return [
+        row("Network (S5)", y),
+        panel("nodeGraph", "Network map", (0, y + 1, 14, 12), graph_q,
+              description="Nodes coloured by cluster (D-22, D-24; clusters never span subnets), each joined to the "
+                          "coordinator by its own link (RTT, and bandwidth once tested, S5.2), and to other nodes by "
+                          "links that join a cluster. Compare it with the building layout (Sprint 5 demo).",
+              options={"nodes": {"mainStatUnit": "", "secondaryStatUnit": ""}, "edges": {}}),
+        panel("table", "Nodes and links", (14, y + 1, 10, 12), [query("/api/v1/metrics/network-nodes", [
+            ("name", "Node", "string"), ("subnet", "Subnet", "string"), ("cluster", "Cluster", "string"),
+            ("cluster_size", "Size", "number"), ("coordinator_rtt_ms", "RTT (ms)", "number"),
+            ("link_mbps", "Link (Mbps)", "number"), ("link_measured_at", "Tested", "timestamp")], params=[])],
+            description="Each node's subnet and cluster, its RTT to the coordinator from heartbeats (S5.1) and its "
+                        "link bandwidth from the latest tunnel test (S5.2). An empty Link cell means never tested: "
+                        "placement then leaves that link's traffic out (S5.3)."),
+        panel("timeseries", "Link bandwidth to the coordinator", (0, y + 13, 8, 8), [query(
+            "/api/v1/metrics/network-links", [("ts", "Time", "timestamp"), ("node", "node", "string"),
+                                              ("bandwidth_mbps", "Mbps", "number")],
+            params=RANGE + [{"key": "method", "value": "tunnel_test"}])],
+            description="Tunnel bandwidth tests (S5.2): the slower of the two directions. Weekly in off-hours, and "
+                        "at once on a node's first worker start or a network change.",
+            transformations=[by_node()],
+            defaults={"unit": "Mbits", "min": 0, "displayName": "${__field.labels.node}",
+                      "custom": {"drawStyle": "points", "pointSize": 6, "showPoints": "always"}},
+            options={"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}),
+        panel("timeseries", "RTT to the coordinator", (8, y + 13, 8, 8), [query(
+            "/api/v1/metrics/network-links", [("ts", "Time", "timestamp"), ("node", "node", "string"),
+                                              ("rtt_ms_p50", "RTT", "number")],
+            params=RANGE + [{"key": "method", "value": "heartbeat"}])],
+            description="Heartbeat RTT, recorded only when it changes or once a day (S5.1, D-25), so points are "
+                        "sparse on a steady network and step at a change.",
+            transformations=[by_node()],
+            defaults={"unit": "ms", "min": 0, "displayName": "${__field.labels.node}",
+                      "custom": {"lineInterpolation": "stepAfter", "showPoints": "always", "pointSize": 5,
+                                 "spanNulls": True}},
+            options={"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}),
+        panel("timeseries", "Probe health", (16, y + 13, 8, 8), [query(
+            "/api/v1/metrics/errors", [("ts", "Time", "timestamp"), ("code", "code", "string"),
+                                       ("count", "count", "number")],
+            params=RANGE + [{"key": "codes", "value": "network"}])],
+            description="Failed and refused bandwidth tests, degraded links and tunnel faults, by error code "
+                        "(docs/error-codes.md). LINK_DEGRADED: bandwidth below half the last test, or RTT up by "
+                        "more than probes.rtt_change_pct.",
+            transformations=[{"id": "groupBy", "options": {"fields": {
+                "Time": {"aggregations": [], "operation": "groupby"}, "code": {"aggregations": [], "operation": "groupby"},
+                "count": {"aggregations": ["sum"], "operation": "aggregate"}}}},
+                by_node("code")],
+            defaults={"displayName": "${__field.labels.code}", "unit": "short", "min": 0, "decimals": 0,
+                      "custom": {"drawStyle": "bars", "fillOpacity": 70, "stacking": {"mode": "normal"}}},
+            options={"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}),
+    ]
+
+
 def build() -> dict:
     hours = [f"{h:02d}" for h in range(24)]
     panels = [
@@ -164,6 +231,7 @@ def build() -> dict:
                         "worker output, redacted config) is at /api/v1/groups/{group}/devices/{device}/crash-reports/"
                         "{crash_id}."),
     ]
+    panels += network_panels(49)
     return {
         "uid": "idlemesh-overview", "title": "IdleMesh overview", "tags": ["idlemesh"], "timezone": "browser",
         "schemaVersion": 39, "version": 1, "editable": False, "graphTooltip": 1, "refresh": "1m",

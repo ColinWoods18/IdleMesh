@@ -4,13 +4,16 @@
 //! TLS replaces it in Phase 2. The inference data path to a remote worker runs over mutual TLS (see
 //! tunnel.rs).
 
+mod bulk;
 mod control;
+mod decode;
 mod diagnostics;
 mod governor;
 mod hardware;
 mod health;
 mod idle;
 mod logging;
+mod netid;
 mod node_config;
 mod node_state;
 mod policy;
@@ -129,9 +132,10 @@ enum Cmd {
         worker_port: u16,
         #[arg(long, default_value_t = 4)]
         worker_threads: u32,
-        /// Time real decoding with llama-bench at startup instead of reporting a memory-copy figure.
+        /// llama-bench for the decode probe (S5.6). Default: llama-bench beside --worker-bin.
         #[arg(long)]
         decode_probe_bench: Option<PathBuf>,
+        /// Reference model for the decode probe. Default: the one the coordinator offers, downloaded once.
         #[arg(long)]
         decode_probe_model: Option<PathBuf>,
         /// Catalog name of the probe model, so the coordinator can convert tokens/s to bandwidth.
@@ -302,6 +306,9 @@ struct HeartbeatReply {
     /// A temporary log-level window (S4.5).
     #[serde(default)]
     log_level: Option<LogWindow>,
+    /// The reference model for the decode probe, when the coordinator can serve it (S5.6).
+    #[serde(default)]
+    decode_probe_model: Option<decode::Offer>,
 }
 
 #[derive(Deserialize)]
@@ -346,7 +353,8 @@ fn take_probe_cached(simulate: &Option<String>, bandwidth: f64) -> Result<probe:
 struct RunOptions {
     beats: Option<u64>,
     worker: Option<WorkerConfig>,
-    decode_probe: Option<(PathBuf, PathBuf, String)>,
+    /// Decode probe (S5.6): explicit llama-bench and model, and the model's catalog name.
+    decode_probe: (Option<PathBuf>, Option<PathBuf>, String),
     /// (listen, advertise) for the mTLS tunnel.
     tunnel: Option<(String, String)>,
     insecure_plaintext: bool,
@@ -491,21 +499,13 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
     let mut assignment: Option<serde_json::Value> = None;
     let mut count = 0u64;
     let bandwidth = if st.simulate.is_some() { 0.0 } else { probe::measure_bandwidth() };
-    let decode = opts.decode_probe.as_ref().and_then(|(bench, model, catalog)| {
-        let threads = opts.worker.as_ref().map(|w| w.threads);
-        match probe::decode_probe(bench, model, threads) {
-            Ok(tps) => {
-                info!(tokens_per_s = tps, "decode probe: {tps:.1} tokens/s on {}",
-                      if threads.is_some() { "cpu" } else { "default backend" });
-                Some(json!({"model": catalog, "tokens_per_s": tps,
-                            "backend": if threads.is_some() { "cpu" } else { "default" }, "threads": threads}))
-            }
-            Err(e) => {
-                warn!(error_code = "PROBE_FAILED", "decode probe unavailable: {e}");
-                None
-            }
-        }
-    });
+    let (probe_bench, probe_model, probe_catalog) = opts.decode_probe.clone();
+    let mut prober = decode::Prober::new(
+        probe_bench, probe_model.map(|m| (m, probe_catalog)), opts.worker.as_ref().map(|w| w.bin.as_path()),
+        opts.worker.as_ref().map(|w| w.threads), opts.cache_dir.clone(),
+        decode::Source { coordinator: st.coordinator.clone(), device_token: st.device_token.clone(),
+                         fingerprint: st.coordinator_fingerprint.clone() });
+    prober.offer(None); // starts at once when the model was named on the command line
     let worker_cfg = match opts.worker.clone() {
         Some(w) => Some(secure_worker(w, &st, &opts)?),
         None => None,
@@ -535,6 +535,11 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
                   h.gpus.iter().map(|g| g.name.clone()).collect::<Vec<_>>().join(", ") },
               h.backends.join(", "));
     }
+    // Network identity (S5.1): rechecked every minute, so moving to another network is noticed. Not for a
+    // simulated node, which stands in for another machine.
+    let mut subnet = if st.simulate.is_none() { netid::subnet_towards(&st.coordinator) } else { None };
+    let mut next_subnet_check = Instant::now() + Duration::from_secs(60);
+    info!(subnet = subnet.as_deref().unwrap_or("unknown"), "network: {}", subnet.as_deref().unwrap_or("unknown"));
     let mut health = health::Sampler::new(hw.as_ref().is_some_and(|h| h.backends.contains(&"cuda")));
     // Idle monitoring and telemetry (S2.1 to S2.6): idle data needs the owner's idle-data consent; health
     // samples and error counts (S3.5) need diagnostics consent. The buffer exists if either was given.
@@ -678,9 +683,25 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
             // momentary yield: memory is given back at handoff, not the moment a user touches the mouse (D-12).
             let ceiling = gov.current.map_or(1.0, |l| l.ceiling);
             let budget = (effective.memory_cap_bytes as f64 * ceiling) as u64;
+            if st.simulate.is_none() && Instant::now() >= next_subnet_check {
+                next_subnet_check = Instant::now() + Duration::from_secs(60);
+                let now_subnet = netid::subnet_towards(&st.coordinator);
+                if now_subnet != subnet {
+                    info!(subnet = now_subnet.as_deref().unwrap_or("unknown"), "network changed: {} -> {}",
+                          subnet.as_deref().unwrap_or("unknown"), now_subnet.as_deref().unwrap_or("unknown"));
+                    subnet = now_subnet;
+                }
+            }
             let mut caps = capabilities(&p, budget, rtt, &st.backend_digest, hw.as_ref());
-            if let Some(d) = &decode {
-                caps["decode_probe"] = d.clone();
+            if let Some(s) = &subnet {
+                caps["network"] = json!({"subnet": s});
+            }
+            // Benchmark only when the governor would let the node contribute and no deployment is assigned
+            // (D-12). The governor, not the node state, decides: a headless server reports "active" forever.
+            prober.set_quiet(!paused && assignment.is_none() && gov.current.is_some_and(
+                |l| l.level > 0.0 && l.reason != governor::Reason::UserActivity));
+            if let Some(d) = prober.result() {
+                caps["decode_probe"] = d;
             }
             let mut body = json!({"capabilities": caps, "paused": paused, "consent": st.consent,
                                   "node_state": tracker.state(),
@@ -780,6 +801,7 @@ fn run(state_path: PathBuf, opts: RunOptions) -> Result<(), String> {
                     if let Some(m) = reply.prefetch.as_ref() {
                         prefetcher.offer(m);
                     }
+                    prober.offer(reply.decode_probe_model.as_ref());
                     if reply.assignment != assignment {
                         logging::set_deployment(reply.assignment.as_ref().and_then(|a| a["deployment_id"].as_str()));
                         info!(trace_id = %trace_id, "assignment: {}",
@@ -949,7 +971,7 @@ fn main() {
             let worker = worker_bin.map(|bin| WorkerConfig {
                 bin, advertise: format!("{worker_host}:{worker_port}"), host: worker_host, port: worker_port,
                 threads: worker_threads, transport: "plaintext", cache_dir: None });
-            let decode_probe = decode_probe_bench.zip(decode_probe_model).map(|(b, m)| (b, m, decode_probe_catalog));
+            let decode_probe = (decode_probe_bench, decode_probe_model, decode_probe_catalog);
             let tunnel = tunnel_listen.map(|l| (tunnel_advertise.unwrap_or_else(|| l.clone()), l)).map(|(a, l)| (l, a));
             run(state, RunOptions { beats, worker, decode_probe, tunnel, insecure_plaintext: insecure_plaintext_worker,
                                     cache_dir, licenses: accept_licenses, telemetry_interval_s, idle_after_s,

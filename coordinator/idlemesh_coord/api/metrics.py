@@ -16,10 +16,12 @@ from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, Request
 from starlette.concurrency import run_in_threadpool
 
+from .. import graph
 from ..domain.access import Principal
 from ..store import iso, now, parse
 from ..telemetry import COORDINATOR_NODE, _ts
 from .auth import current, require_metrics
+from .errors import ApiError
 
 MAX_RANGE = timedelta(days=90)
 MAX_ROWS = 50_000
@@ -120,21 +122,103 @@ def crashes(app, group_id: str, start: str, end: str) -> list[dict]:
              "build_hash": r["build_hash"], "os": r["os"], "summary": r["summary"], "crash_id": r["id"]} for r in rows]
 
 
-def error_rates(app, group_id: str, start: str, end: str, bucket_min: int) -> list[dict]:
-    """Error events per code in fixed buckets, from the group's nodes and from the coordinator itself."""
+# Codes the network view counts as probe health (S5.5): failed or refused tests, degraded links, tunnel faults.
+NETWORK_CODES = ("NET_PROBE_FAILED", "NET_PROBE_REFUSED", "LINK_DEGRADED", "TUNNEL_FAILED", "TUNNEL_HANDSHAKE_FAILED",
+                 "TUNNEL_HANDSHAKE_TIMEOUT", "TUNNEL_WORKER_UNREACHABLE")
+
+
+def error_rates(app, group_id: str, start: str, end: str, bucket_min: int,
+                codes: list[str] | None = None) -> list[dict]:
+    """Error events per code in fixed buckets, from the group's nodes and from the coordinator itself; only
+    `codes` when given."""
     nodes = _nodes(app, group_id)
     marks, args = _in(nodes)
     counts: dict[tuple, int] = defaultdict(int)
     width = bucket_min * 60
+    only = f" AND code IN ({','.join('?' * len(codes))})" if codes else ""
     for r in app.state.store.all(
             f"SELECT node, ts, code, count FROM error_events WHERE (node IN ({marks}) OR node = ?)"
-            f" AND ts >= ? AND ts <= ? LIMIT {MAX_ROWS}", (*args, COORDINATOR_NODE, start, end)):
+            f" AND ts >= ? AND ts <= ?{only} LIMIT {MAX_ROWS}",
+            (*args, COORDINATOR_NODE, start, end, *(codes or []))):
         t = datetime.fromisoformat(r["ts"]).timestamp()
         bucket = datetime.fromtimestamp(t - t % width, timezone.utc)
         source = "coordinator" if r["node"] == COORDINATOR_NODE else nodes[r["node"]]["name"]
         counts[(bucket, r["code"], source)] += r["count"]
     return [{"ts": iso(b), "code": code, "source": source, "count": n}
             for (b, code, source), n in sorted(counts.items())]
+
+
+def network_links(app, group_id: str, start: str, end: str, method: str | None) -> list[dict]:
+    """Network figures over time (S5.5): each node's link to the coordinator, and links between the group's
+    nodes, oldest first. `method` limits them to one way of measuring: "heartbeat" (RTT on change), "tunnel"
+    (the bandwidth test, S5.2) or one an agent reported."""
+    nodes = _nodes(app, group_id)
+    marks, args = _in(nodes)
+    by = " AND method = ?" if method else ""
+    rows = app.state.store.all(
+        f"SELECT src, dst, ts, method, rtt_ms_p50, rtt_ms_p95, bandwidth_mbps FROM net_edges WHERE src IN ({marks})"
+        f" AND (dst = ? OR dst IN ({marks})) AND ts >= ? AND ts <= ?{by} ORDER BY ts LIMIT {MAX_ROWS}",
+        (*args, COORDINATOR_NODE, *args, start, end, *([method] if method else [])))
+    return [{"ts": r["ts"], "node": nodes[r["src"]]["name"],
+             "peer": "coordinator" if r["dst"] == COORDINATOR_NODE else nodes[r["dst"]]["name"],
+             "method": r["method"], "rtt_ms_p50": r["rtt_ms_p50"], "rtt_ms_p95": r["rtt_ms_p95"],
+             "bandwidth_mbps": r["bandwidth_mbps"]} for r in rows]
+
+
+# One colour per cluster in the network map, largest cluster first; nodes in no cluster are grey.
+CLUSTER_COLORS = ["#3274D9", "#56A64B", "#E0B400", "#A352CC", "#FF780A", "#00A3A3", "#E02F44", "#8AB8FF"]
+
+
+def _view(app, group_id: str) -> dict:
+    settings, keys = app.state.settings, app.state.node_keys
+    devices = {keys.key(r["id"]): {"device_id": r["id"], "name": r["name"]} for r in app.state.store.all(
+        "SELECT id, name FROM devices WHERE group_id = ? AND status != 'revoked'", (group_id,))}
+    policy = graph.ClusterPolicy(max_rtt_ms=settings.cluster_max_rtt_ms, min_mbps=settings.cluster_min_mbps)
+    return graph.network_view(app.state.store, devices, policy, settings.cluster_max_age_h,
+                              3 * settings.bandwidth_every_h)
+
+
+def network_nodes(app, group_id: str) -> list[dict]:
+    """One row per node: its subnet, cluster and newest figures to the coordinator (S5.5)."""
+    view = _view(app, group_id)
+    size = {c["cluster_id"]: len(c["devices"]) for c in view["clusters"]}
+    return [{"name": n["name"], "subnet": n["subnet"], "cluster": n["cluster_id"],
+             "cluster_size": size.get(n["cluster_id"]), "coordinator_rtt_ms": n["coordinator_rtt_ms"],
+             "link_mbps": n["coordinator_mbps"], "link_measured_at": n["coordinator_mbps_at"],
+             "cluster_since": n["cluster_since"]} for n in view["nodes"]]
+
+
+def _num(v: float | None, unit: str) -> str:
+    return f"{v:g} {unit}" if v is not None else ""
+
+
+def network_graph(app, group_id: str, part: str) -> list[dict]:
+    """The network map for Grafana's node graph panel (S5.5): `part` is "nodes" or "edges". The coordinator
+    is a node; every device is joined to it by its own link, and to other devices by the links that join a
+    cluster (measured or relayed)."""
+    view = _view(app, group_id)
+    color = {c["cluster_id"]: CLUSTER_COLORS[i % len(CLUSTER_COLORS)] for i, c in enumerate(view["clusters"])}
+    if part == "nodes":
+        rows = [{"id": "coordinator", "title": "coordinator", "subtitle": "head", "mainstat": "",
+                 "secondarystat": "", "color": "#8f8f8f"}]
+        for n in view["nodes"]:
+            rows.append({"id": n["device_id"], "title": n["name"], "subtitle": n["subnet"] or "no subnet",
+                         "mainstat": n["cluster_id"] or "no cluster",
+                         "secondarystat": _num(n["coordinator_mbps"], "Mbps"),
+                         "color": color.get(n["cluster_id"], "#8f8f8f")})
+        return rows
+    rows = []
+    for n in view["nodes"]:
+        if n["coordinator_rtt_ms"] is not None or n["coordinator_mbps"] is not None:
+            rows.append({"id": f"{n['device_id']}-coordinator", "source": n["device_id"], "target": "coordinator",
+                         "mainstat": _num(n["coordinator_rtt_ms"], "ms"),
+                         "secondarystat": _num(n["coordinator_mbps"], "Mbps"), "kind": "head"})
+    for link in view["links"]:
+        if link["joins"]:
+            rows.append({"id": f"{link['a']}-{link['b']}", "source": link["a"], "target": link["b"],
+                         "mainstat": _num(link["rtt_ms_p50"], "ms"), "secondarystat": link["source"],
+                         "kind": "cluster"})
+    return rows
 
 
 def register(app: FastAPI) -> None:
@@ -178,9 +262,35 @@ def register(app: FastAPI) -> None:
 
     @app.get("/api/v1/metrics/errors", tags=["metrics"])
     async def metrics_errors(request: Request, p: Principal = Depends(current), from_ms: int | None = None,
-                             to_ms: int | None = None, hours: float = 24, bucket_min: int = 5):
-        """Error events per code per time bucket, by source (a node's name, or coordinator)."""
+                             to_ms: int | None = None, hours: float = 24, bucket_min: int = 5,
+                             codes: str | None = None):
+        """Error events per code per time bucket, by source (a node's name, or coordinator). `codes` is a
+        comma-separated list to count only those, or "network" for the network view's probe-health codes."""
         require_metrics(p)
         start, end = _range(from_ms, to_ms, hours)
+        wanted = list(NETWORK_CODES) if codes == "network" else (
+            [c.strip() for c in codes.split(",") if c.strip()][:50] if codes else None)
         return await run_in_threadpool(error_rates, request.app, p.group_id, start, end,
-                                       min(max(bucket_min, 1), 1440))
+                                       min(max(bucket_min, 1), 1440), wanted)
+
+    @app.get("/api/v1/metrics/network-links", tags=["metrics"])
+    async def metrics_network_links(request: Request, p: Principal = Depends(current), from_ms: int | None = None,
+                                    to_ms: int | None = None, hours: float = 24 * 7, method: str | None = None):
+        """Network figures over time (S5.5): RTT and bandwidth per node and link, optionally one method only."""
+        require_metrics(p)
+        start, end = _range(from_ms, to_ms, hours)
+        return await run_in_threadpool(network_links, request.app, p.group_id, start, end, method)
+
+    @app.get("/api/v1/metrics/network-nodes", tags=["metrics"])
+    async def metrics_network_nodes(request: Request, p: Principal = Depends(current)):
+        """Each node's subnet, cluster and newest figures to the coordinator (S5.5)."""
+        require_metrics(p)
+        return await run_in_threadpool(network_nodes, request.app, p.group_id)
+
+    @app.get("/api/v1/metrics/network-graph", tags=["metrics"])
+    async def metrics_network_graph(request: Request, p: Principal = Depends(current), part: str = "nodes"):
+        """The network map as node-graph frames (S5.5): part=nodes or part=edges."""
+        require_metrics(p)
+        if part not in ("nodes", "edges"):
+            raise ApiError(400, "INVALID_FIELDS", "part must be nodes or edges.")
+        return await run_in_threadpool(network_graph, request.app, p.group_id, part)

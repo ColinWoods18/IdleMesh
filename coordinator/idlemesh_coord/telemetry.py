@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import logging
 import secrets
+from collections.abc import Callable
 from datetime import timedelta, timezone
 from pathlib import Path
 
@@ -46,7 +47,7 @@ def _load_salt(path: Path) -> bytes:
 # Which consent each record kind needs (S2.6, S3.5): what the person at the machine does is idle data; how the
 # node itself is doing is diagnostics.
 IDLE_KINDS = frozenset({"idle", "state", "lid"})
-DIAGNOSTIC_KINDS = frozenset({"health", "errors"})
+DIAGNOSTIC_KINDS = frozenset({"health", "errors", "net_edge"})  # net_edge: how the node's network performs
 COORDINATOR_NODE = "coordinator"  # the `node` of error counts the coordinator logged itself
 
 
@@ -60,8 +61,10 @@ def has_consent(consent: dict | None, kinds=frozenset({"idle"})) -> bool:
     return True
 
 
-def ingest(store: Store, node: str, batch, org_id: str | None, site_id: str | None) -> dict:
-    """Store one validated batch. Returns how many records were new and how many were repeats."""
+def ingest(store: Store, node: str, batch, org_id: str | None, site_id: str | None,
+           peer_key: Callable[[str], str] = lambda device_id: device_id) -> dict:
+    """Store one validated batch. Returns how many records were new and how many were repeats. `peer_key`
+    turns the device ID a net_edge record names into the key that device's telemetry is stored under."""
     received = iso(now())
     new = 0
     with store.tx() as c:
@@ -94,6 +97,13 @@ def ingest(store: Store, node: str, batch, org_id: str | None, site_id: str | No
                     (node, ts, org_id, site_id, r.cpu_util, r.gpu_util, r.mem_used_gb, r.gpu_mem_used_gb, r.temp_c,
                      r.cache_disk_free_gb, r.agent_uptime_s, r.worker_restarts, r.cap_kills, r.tunnel_errors,
                      r.telemetry_buffer_bytes, r.telemetry_dropped, received))
+            elif r.kind == "net_edge":
+                dst = r.dst if r.dst == COORDINATOR_NODE else peer_key(r.dst)
+                cur = c.execute(
+                    "INSERT OR IGNORE INTO net_edges (src, dst, ts, method, rtt_ms_p50, rtt_ms_p95, bandwidth_mbps,"
+                    " samples, org_id, site_id, received_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (node, dst, ts, r.method, r.rtt_ms_p50, r.rtt_ms_p95, r.bandwidth_mbps, r.samples, org_id,
+                     site_id, received))
             else:  # errors: one row per code, all or none (a retried batch repeats every code)
                 inserted = 0
                 for code, count in r.counts.items():
@@ -118,7 +128,7 @@ def prune(store: Store, retention_days: int) -> int:
     removed = 0
     with store.tx() as c:
         for table, col in (("idle_samples", "ts"), ("node_events", "ts"), ("telemetry_drops", "at"),
-                           ("node_health", "ts"), ("error_events", "ts")):
+                           ("node_health", "ts"), ("error_events", "ts"), ("net_edges", "ts")):
             removed += c.execute(f"DELETE FROM {table} WHERE {col} < ?", (cutoff,)).rowcount
     if removed:
         obs.log(log, logging.INFO, "telemetry retention applied", removed=removed, retention_days=retention_days)

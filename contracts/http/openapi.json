@@ -2900,6 +2900,56 @@
         ]
       }
     },
+    "/api/v1/groups/{group_id}/devices/{device_id}/bandwidth-test": {
+      "post": {
+        "description": "Test a device's link to this coordinator now (S5.2, D-25 admin request). Group administrators only.\nSkips the off-hours rule, but not the others: the owner's consent, the governor, and a link in use.",
+        "operationId": "bandwidth_test_api_v1_groups__group_id__devices__device_id__bandwidth_test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Bandwidth Test",
+        "tags": [
+          "devices"
+        ]
+      }
+    },
     "/api/v1/groups/{group_id}/devices/{device_id}/crash-reports": {
       "get": {
         "operationId": "list_crash_reports_api_v1_groups__group_id__devices__device_id__crash_reports_get",
@@ -3502,6 +3552,47 @@
         ]
       }
     },
+    "/api/v1/groups/{group_id}/network/probes": {
+      "get": {
+        "description": "The last bandwidth test of each device since the coordinator started, and when the next is due.",
+        "operationId": "probe_status_api_v1_groups__group_id__network_probes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "group_id",
+            "required": true,
+            "schema": {
+              "title": "Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Probe Status",
+        "tags": [
+          "devices"
+        ]
+      }
+    },
     "/api/v1/groups/{group_id}/queue": {
       "get": {
         "description": "Content-free queue view for administrators: positions and states, never prompts.",
@@ -3698,7 +3789,7 @@
     },
     "/api/v1/metrics/errors": {
       "get": {
-        "description": "Error events per code per time bucket, by source (a node's name, or coordinator).",
+        "description": "Error events per code per time bucket, by source (a node's name, or coordinator). `codes` is a\ncomma-separated list to count only those, or \"network\" for the network view's probe-health codes.",
         "operationId": "metrics_errors_api_v1_metrics_errors_get",
         "parameters": [
           {
@@ -3751,6 +3842,22 @@
               "default": 5,
               "title": "Bucket Min",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "codes",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Codes"
             }
           }
         ],
@@ -3939,6 +4046,158 @@
           }
         },
         "summary": "Metrics Idle Heatmap",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/metrics/network-graph": {
+      "get": {
+        "description": "The network map as node-graph frames (S5.5): part=nodes or part=edges.",
+        "operationId": "metrics_network_graph_api_v1_metrics_network_graph_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "part",
+            "required": false,
+            "schema": {
+              "default": "nodes",
+              "title": "Part",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Network Graph",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/metrics/network-links": {
+      "get": {
+        "description": "Network figures over time (S5.5): RTT and bandwidth per node and link, optionally one method only.",
+        "operationId": "metrics_network_links_api_v1_metrics_network_links_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "from_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "From Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "to_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "To Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hours",
+            "required": false,
+            "schema": {
+              "default": 168,
+              "title": "Hours",
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "method",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Method"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics Network Links",
+        "tags": [
+          "metrics"
+        ]
+      }
+    },
+    "/api/v1/metrics/network-nodes": {
+      "get": {
+        "description": "Each node's subnet, cluster and newest figures to the coordinator (S5.5).",
+        "operationId": "metrics_network_nodes_api_v1_metrics_network_nodes_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Metrics Network Nodes",
         "tags": [
           "metrics"
         ]

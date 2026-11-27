@@ -4,6 +4,7 @@
 //! TLS replaces it in Phase 2. The inference data path to a remote worker runs over mutual TLS (see
 //! tunnel.rs).
 
+mod bulk;
 mod control;
 mod decode;
 mod diagnostics;

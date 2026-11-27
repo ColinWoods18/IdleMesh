@@ -103,6 +103,15 @@ RPC_CONN_CAPS_SIZE = 24
 RPC_PROTO_MAJOR = 8
 
 
+# Built-in bandwidth test served by the agent's tunnel (S5.2; agent/src/bulk.rs has the protocol). The first
+# byte cannot be an RPC command, so the agent knows not to forward the connection to the worker.
+BULK_MAGIC, BULK_VERSION = 0xB7, 1
+BULK_DONE, BULK_UPLOAD, BULK_DOWNLOAD = 0, 1, 2
+BULK_MAX_BYTES = 64 << 20
+BULK_WARMUP_BYTES = 1 << 20
+BULK_DEFAULT_BYTES = 8 << 20
+
+
 def rpc_command(cmd: int, payload: bytes) -> bytes:
     return bytes([cmd]) + struct.pack("<Q", len(payload)) + payload
 
@@ -119,6 +128,7 @@ def rtt_summary(times_ms: list[float]) -> dict:
     s = sorted(times_ms)
     return {"mean_ms": round(statistics.fmean(s), 2), "median_ms": round(statistics.median(s), 2),
             "min_ms": round(s[0], 2), "p90_ms": round(s[min(len(s) - 1, int(0.9 * len(s)))], 2),
+            "p95_ms": round(s[min(len(s) - 1, int(0.95 * len(s)))], 2),
             "samples": len(s)}
 
 
@@ -254,6 +264,84 @@ class TunnelManager:
         except (OSError, asyncio.TimeoutError, TimeoutError, asyncio.IncompleteReadError) as e:
             raise TunnelError(f"no RPC reply through the tunnel at {remote}: {e or 'timeout'}") from None
         return rtt_summary(times)
+
+    def measure_bandwidth(self, remote: str, device_cert_pem: str, nbytes: int = BULK_DEFAULT_BYTES,
+                          timeout: float = 60) -> dict:
+        """Time bulk transfers both ways through a node's tunnel, served by the agent itself (S5.2).
+
+        The agent answers the test without involving its worker, so it can run while the worker is idle or
+        stopped. A 1 MiB transfer each way first opens the TCP window; then `nbytes` goes up and `nbytes` comes
+        down. Each side times what it receives from its first byte, so the start-up round trip is not counted.
+        The planning figure is the slower direction: a token's traffic goes both ways.
+        """
+        if not 0 < nbytes <= BULK_MAX_BYTES:
+            raise ValueError(f"nbytes must be between 1 and {BULK_MAX_BYTES}")
+
+        async def upload(r, w, n: int) -> float:
+            w.write(bytes([BULK_UPLOAD]) + struct.pack("<Q", n))
+            chunk = bytes(1 << 16)
+            left = n
+            while left:
+                w.write(chunk[:min(left, len(chunk))])
+                left -= min(left, len(chunk))
+                await w.drain()
+            got, micros = struct.unpack("<QQ", await r.readexactly(16))
+            if got != n:
+                raise TunnelError(f"agent received {got} of {n} bytes")
+            return n * 8 / max(micros, 1)  # bits per microsecond = Mbps
+
+        async def download(r, w, n: int) -> float:
+            w.write(bytes([BULK_DOWNLOAD]) + struct.pack("<Q", n))
+            await w.drain()
+            left, first, timed = n, None, 0
+            while left:
+                data = await r.read(min(left, 1 << 16))
+                if not data:
+                    raise TunnelError(f"connection closed with {left} of {n} bytes still to come")
+                left -= len(data)
+                if first is None:  # the first read starts the clock, so its bytes are not counted
+                    first = time.perf_counter()
+                else:
+                    timed += len(data)
+            seconds = time.perf_counter() - first
+            if not timed or seconds <= 0:
+                raise TunnelError("transfer too small to time; use more bytes")
+            return timed * 8 / 1e6 / seconds
+
+        async def go():
+            host, _, port = remote.rpartition(":")
+            r, w = await asyncio.wait_for(asyncio.open_connection(
+                host.strip("[]"), int(port), ssl=self.identity.client_context(device_cert_pem)), 10)
+            try:
+                w.write(bytes([BULK_MAGIC, BULK_VERSION]))
+                await w.drain()
+                try:
+                    hello = await asyncio.wait_for(r.readexactly(2), 10)
+                except asyncio.IncompleteReadError:
+                    raise TunnelError(f"the agent at {remote} has no built-in bandwidth test; update the agent") from None
+                if hello != bytes([BULK_MAGIC, BULK_VERSION]):
+                    raise TunnelError(f"the agent at {remote} answered the bandwidth test with {hello.hex()}")
+                warm = min(BULK_WARMUP_BYTES, nbytes)
+                await upload(r, w, warm)
+                await download(r, w, warm)
+                t0 = time.perf_counter()
+                up = await upload(r, w, nbytes)
+                down = await download(r, w, nbytes)
+                w.write(bytes([BULK_DONE]))
+                await w.drain()
+                return up, down, (time.perf_counter() - t0) * 1000
+            finally:
+                w.close()
+        try:
+            up, down, ms = self._call(asyncio.wait_for(go(), timeout), timeout + 5)
+        except ssl.SSLError as e:
+            raise TunnelError(f"TLS handshake with {remote} failed: {e.reason or e}") from None
+        except TunnelError:
+            raise
+        except (OSError, asyncio.TimeoutError, TimeoutError, asyncio.IncompleteReadError, struct.error) as e:
+            raise TunnelError(f"bandwidth test through the tunnel at {remote} failed: {e or 'timeout'}") from None
+        return {"up_mbps": round(up, 1), "down_mbps": round(down, 1), "mbps": round(min(up, down), 1),
+                "bytes": nbytes, "duration_ms": round(ms, 1)}
 
     def close(self, owner: str) -> None:
         for fwd in self._open.pop(owner, []):

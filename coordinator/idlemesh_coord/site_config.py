@@ -87,6 +87,17 @@ class Probes(_Strict):
     rtt_change_pct: float = Field(50, gt=0, le=1000)
     bandwidth_every_h: float = Field(168, gt=0)
     bandwidth_off_hours_only: bool = True
+    # Off-hours for the slow bandwidth refresh, in the coordinator's local time; weekends count all day (S5.2).
+    off_hours_start: str = "20:00"
+    off_hours_end: str = "07:00"
+    bandwidth_test_mb: int = Field(8, ge=1, le=64)  # bytes each way per test, in MiB
+
+    @field_validator("off_hours_start", "off_hours_end")
+    @classmethod
+    def _hhmm(cls, v: str) -> str:
+        if not _HHMM.match(v):
+            raise ValueError(f"times are 24-hour HH:MM; got {v!r}")
+        return v
 
 
 class Clusters(_Strict):

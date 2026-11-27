@@ -28,7 +28,7 @@ from ..security import Passwords, fingerprint, matches, new_id, new_secret, veri
 from ..store import Store, iso, now, parse
 from ..tokens import context_tokens
 from ..transport import CoordinatorIdentity, TunnelError, TunnelManager, cert_fingerprint, is_certificate
-from . import compat, diagnostics, errors, metrics
+from . import compat, diagnostics, errors, metrics, netprobe
 from .auth import SESSION_COOKIE, bearer, current, device_by_token, require_admin, require_group, require_session
 from .errors import ApiError, not_found
 from .schemas import (CodeIn, ConversationIn, CreateGroupIn, CredentialIn, DeploymentIn, EnrollIn, ForkIn,
@@ -75,6 +75,7 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
     app.state.control_fingerprint = (cert_fingerprint(open(settings.control_cert).read())
                                      if settings.control_cert else None)
     app.state.path_rtt = {}  # device_id -> (mean ms through the worker tunnel, monotonic time measured)
+    netprobe.init(app)  # bandwidth tests through node tunnels (S5.2)
     app.state.passwords = Passwords(settings.argon2_fast)
     app.state.node_keys = telemetry.NodeKeys(os.path.dirname(os.path.abspath(settings.db_path)),
                                              settings.pseudonymize_nodes)
@@ -115,6 +116,7 @@ def create_app(settings: Settings | None = None, runtime=None) -> FastAPI:
     compat.register(app)
     metrics.register(app)
     diagnostics.register(app)
+    netprobe.register(app)
     return app
 
 
@@ -205,6 +207,10 @@ async def _liveness_monitor(app) -> None:
                 await run_in_threadpool(recompute_clusters, app)
             except Exception:  # noqa: BLE001 - clustering must never stop the liveness monitor
                 log.exception("cannot recompute clusters", extra={"error_code": "INTERNAL"})
+        try:  # bandwidth tests through node tunnels (S5.2): starts at most one a minute, on its own task
+            netprobe.maybe_sweep(app)
+        except Exception:  # noqa: BLE001 - never let probes stop the liveness monitor
+            log.exception("cannot start the bandwidth sweep", extra={"error_code": "INTERNAL"})
         if time.monotonic() >= next_prune:  # telemetry retention (S2.3), hourly
             next_prune = time.monotonic() + 3600
             try:
@@ -259,13 +265,18 @@ def _fail_deployment(store: Store, group_id: str, dep_id: str, code: str, detail
 async def load_now(app, group_id: str, dep_id: str, explanation: dict, member_id: str | None) -> dict:
     """Open tunnels, load the backend, and make the deployment current. Marks it failed on error."""
     store = app.state.store
+    stage_ids = {s["device_id"] for s in explanation["stages"]}
+    app.state.loading_devices |= stage_ids  # no bandwidth test may share these links while weights load
     try:
+        await netprobe.wait_idle(app, stage_ids)
         await open_tunnels(app, store, dep_id, explanation)
         loaded = await app.state.runtime.load_deployment(dep_id, explanation)
     except RuntimeFailure as e:
         await run_in_threadpool(app.state.tunnels.close, dep_id)
         _fail_deployment(store, group_id, dep_id, e.code)
         raise
+    finally:
+        app.state.loading_devices -= stage_ids
     with store.tx() as c:
         # Store the plan as loaded (transport and loopback forwarder per stage), not as first planned.
         c.execute("UPDATE deployments SET state = 'ready', placement = ? WHERE id = ?", (json.dumps(explanation), dep_id))
@@ -320,10 +331,11 @@ async def open_tunnels(app, store: Store, deployment_id: str, explanation: dict)
     """Route every remote stage whose agent runs the mTLS tunnel through a loopback forwarder."""
     local = getattr(app.state.runtime, "local_device", None)
     measured: dict[str, dict] = {}
+    tested: dict[str, dict] = {}
     for st in explanation["stages"]:
         if st["name"] == local or not st.get("endpoint"):
             continue
-        d = store.one("SELECT public_key, capabilities FROM devices WHERE id = ?", (st["device_id"],))
+        d = store.one("SELECT * FROM devices WHERE id = ?", (st["device_id"],))
         worker = json.loads(d["capabilities"]).get("worker") or {}
         st["transport"] = worker.get("transport", "plaintext")
         if st["transport"] != "mtls":
@@ -339,13 +351,19 @@ async def open_tunnels(app, store: Store, deployment_id: str, explanation: dict)
             app.state.path_rtt[st["device_id"]] = (measured[st["device_id"]]["mean_ms"], time.monotonic())
         except TunnelError as e:
             st["rtt_measurement_error"] = str(e)
+        if st.get("link_mbps") is None:  # no figure for this link yet (S5.3): time it before the weights load
+            hit = await netprobe.test_at_load(app, d)
+            if hit:
+                tested[st["device_id"]] = hit
+            else:
+                st["link_measurement_error"] = "bandwidth test failed or unavailable; see NET_PROBE_FAILED"
         try:
             st["rpc_endpoint"] = await run_in_threadpool(app.state.tunnels.open, deployment_id, st["endpoint"],
                                                          d["public_key"])
         except TunnelError as e:
             await run_in_threadpool(app.state.tunnels.close, deployment_id)
             raise RuntimeFailure("TUNNEL_FAILED", f"{st['name']}: {e}") from None
-    reestimate_with_path_rtt(explanation, measured)
+    reestimate_with_path_rtt(explanation, measured, links=tested)
 
 
 def _branch(row) -> Branch:
@@ -370,7 +388,9 @@ def _planning_rtt(path_rtt: dict | None, device_id: str, heartbeat_rtt: float) -
     return heartbeat_rtt, "heartbeat"
 
 
-def _profiles(store: Store, group_id: str, settings: Settings, path_rtt: dict | None = None) -> list[DeviceProfile]:
+def _profiles(store: Store, group_id: str, settings: Settings, path_rtt: dict | None = None,
+              links: dict | None = None) -> list[DeviceProfile]:
+    """Placement inputs per device. `links` is {device_id: (mbps, source)} from bandwidth tests (S5.3)."""
     out = []
     for d in store.all("SELECT * FROM devices WHERE group_id = ?", (group_id,)):
         cap, pol = json.loads(d["capabilities"]), json.loads(d["policy"])
@@ -393,7 +413,9 @@ def _profiles(store: Store, group_id: str, settings: Settings, path_rtt: dict | 
             allow_battery=pol["allow_battery"], ready=reason is None, authorized=d["status"] == "active",
             paused=pol["paused"] or pol.get("reported_paused", False), stability=1.0,
             endpoint=worker["endpoint"] if worker and worker["state"] == "running" else None,
-            bandwidth_source=source, not_ready_reason=reason, node_state=cap.get("node_state") if fresh else None))
+            bandwidth_source=source, not_ready_reason=reason, node_state=cap.get("node_state") if fresh else None,
+            link_mbps=(links or {}).get(d["id"], (None, None))[0],
+            link_source=(links or {}).get(d["id"], (None, None))[1]))
     return out
 
 
@@ -737,7 +759,7 @@ def register(app: FastAPI) -> None:
         devices = {keys.key(r["id"]): {"device_id": r["id"], "name": r["name"]} for r in S(request).all(
             "SELECT id, name FROM devices WHERE group_id = ? AND status != 'revoked'", (group_id,))}
         return await run_in_threadpool(graph.network_view, S(request), devices, cluster_policy(settings),
-                                       settings.cluster_max_age_h)
+                                       settings.cluster_max_age_h, 3 * settings.bandwidth_every_h)
 
     @app.get("/api/v1/devices/{device_id}/model-file", tags=["devices"])
     async def model_file(device_id: str, request: Request):
@@ -814,12 +836,14 @@ def register(app: FastAPI) -> None:
         out = []
         hardware = {d["id"]: json.loads(d["capabilities"]).get("hardware")
                     for d in S(request).all("SELECT id, capabilities FROM devices WHERE group_id = ?", (group_id,))}
-        for prof in _profiles(S(request), group_id, settings, request.app.state.path_rtt):
+        for prof in _profiles(S(request), group_id, settings, request.app.state.path_rtt,
+                              netprobe.figures(request.app)):
             state = ("unavailable" if not prof.ready else "paused" if prof.paused else
                      "incompatible" if prof.backend_digest != request.app.state.runtime.backend_digest else "ready")
             out.append({"device_id": prof.device_id, "name": prof.name, "os": prof.os, "arch": prof.arch,
                         "state": state, "budget_bytes": prof.budget_bytes, "power": prof.power,
                         "worker_running": prof.endpoint is not None, "node_state": prof.node_state,
+                        "link_mbps": prof.link_mbps,
                         "hardware": hardware.get(prof.device_id)})
         return {"devices": out}
 
@@ -838,7 +862,9 @@ def register(app: FastAPI) -> None:
             raise ApiError(409, "DEPLOYMENT_BUSY", "Wait for queued and running requests to finish.", True)
         policy = PlacementPolicy(backend_digest=request.app.state.runtime.backend_digest, require_all=body.require_all,
                                  local_device=getattr(request.app.state.runtime, "local_device", None))
-        explanation = plan(_profiles(S(request), group_id, settings, request.app.state.path_rtt), model, policy)
+        profiles = _profiles(S(request), group_id, settings, request.app.state.path_rtt,
+                             await run_in_threadpool(netprobe.figures, request.app))
+        explanation = plan(profiles, model, policy)
         if not explanation["feasible"]:
             raise ApiError(409, "PLACEMENT_INFEASIBLE", explanation.get("reason", "No feasible placement."),
                            extra={"explanation": explanation})

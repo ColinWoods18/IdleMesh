@@ -68,6 +68,12 @@ class Settings:
     # Network figures from heartbeats (S5.1; site config section `probes`).
     rtt_refresh_h: float = 24
     rtt_change_pct: float = 50
+    # Bandwidth test through each node's tunnel (S5.2; site config section `probes`).
+    bandwidth_every_h: float = 168
+    bandwidth_off_hours_only: bool = True
+    off_hours_start: str = "20:00"
+    off_hours_end: str = "07:00"
+    bandwidth_test_mb: int = 8
     # Network clusters (S5.4; site config section `clusters`).
     cluster_max_rtt_ms: float = 5.0
     cluster_min_mbps: float = 100.0
@@ -88,5 +94,9 @@ class Settings:
                       "contribution_windows": [w.model_dump() for w in site.contribution.windows],
                       "cluster_max_rtt_ms": site.clusters.max_rtt_ms, "cluster_min_mbps": site.clusters.min_mbps,
                       "rtt_refresh_h": site.probes.rtt_refresh_h, "rtt_change_pct": site.probes.rtt_change_pct,
+                      "bandwidth_every_h": site.probes.bandwidth_every_h,
+                      "bandwidth_off_hours_only": site.probes.bandwidth_off_hours_only,
+                      "off_hours_start": site.probes.off_hours_start, "off_hours_end": site.probes.off_hours_end,
+                      "bandwidth_test_mb": site.probes.bandwidth_test_mb,
                       "cluster_max_age_h": site.clusters.max_age_h, "cluster_every_s": site.clusters.recompute_every_s,
                       **overrides})

@@ -10,7 +10,7 @@ import ssl
 import subprocess
 
 import pytest
-from live import (AGENT, BIN, RPC_SERVER, HAVE_STACK, MODELS, all_ready, coordinator, enroll_agent, free_port, mac_heartbeat,
+from live import (needs_metal_head, AGENT, BIN, RPC_SERVER, HAVE_STACK, MODELS, all_ready, coordinator, enroll_agent, free_port, mac_heartbeat,
                   owner_client, start_agent, stop_agents, until)
 
 from idlemesh_coord.runtime.fake import FakeRuntime
@@ -48,6 +48,7 @@ def _intruder_attempt(port: int, identity: CoordinatorIdentity | None, device_ce
         return False
 
 
+@needs_metal_head
 def test_deployment_runs_through_the_tunnel_and_refuses_strangers(tmp_path):
     rt = LlamaCppRuntime(str(BIN), str(MODELS), "Mac Studio", {}, log_dir=str(tmp_path))
     agents, logs = [], {}

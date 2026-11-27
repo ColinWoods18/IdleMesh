@@ -8,13 +8,15 @@
 //! worker. Certificates are pinned by exact bytes, so there is no certificate authority to compromise;
 //! removing a device on the coordinator stops it being dialled, and revocation stops the agent.
 
+use crate::bulk;
 use rustls::client::danger::HandshakeSignatureValid;
 use rustls::crypto::{verify_tls12_signature, verify_tls13_signature, CryptoProvider, WebPkiSupportedAlgorithms};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{CertificateError, DigitallySignedStruct, DistinguishedName, Error, ServerConfig, SignatureScheme};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,6 +97,9 @@ pub fn server_config(device: &Identity, coordinator_cert_pem: &str) -> Result<Se
 pub struct Counters {
     pub accepted: AtomicU64,
     pub rejected: AtomicU64,
+    /// Bandwidth tests served (S5.2); one runs at a time.
+    pub bandwidth_tests: AtomicU64,
+    bandwidth_busy: AtomicBool,
 }
 
 /// Bind the listener now (so a bad address fails at startup) and serve on a background thread.
@@ -131,10 +136,22 @@ pub fn spawn(listen: &str, worker_port: u16, config: ServerConfig) -> Result<Arc
                                 return;
                             }
                         };
+                        // The first byte says whether this is a bandwidth test (S5.2) or the worker's RPC stream.
+                        let first = match tls.read_u8().await {
+                            Ok(b) => b,
+                            Err(_) => return,
+                        };
+                        if first == bulk::MAGIC {
+                            serve_bandwidth_test(&mut tls, &c).await;
+                            return;
+                        }
                         match tokio::net::TcpStream::connect(("127.0.0.1", worker_port)).await {
                             Ok(mut upstream) => {
                                 c.accepted.fetch_add(1, Ordering::Relaxed);
                                 let _ = upstream.set_nodelay(true);
+                                if upstream.write_all(&[first]).await.is_err() {
+                                    return;
+                                }
                                 let _ = tokio::io::copy_bidirectional(&mut tls, &mut upstream).await;
                             }
                             Err(e) => tracing::warn!(error_code = "TUNNEL_WORKER_UNREACHABLE",
@@ -146,6 +163,26 @@ pub fn spawn(listen: &str, worker_port: u16, config: ServerConfig) -> Result<Arc
         })
         .map_err(|e| e.to_string())?;
     Ok(counters)
+}
+
+/// One bandwidth test at a time: a second is refused rather than splitting the link between two figures.
+async fn serve_bandwidth_test<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(s: &mut S, c: &Counters) {
+    if c.bandwidth_busy.swap(true, Ordering::SeqCst) {
+        tracing::warn!(error_code = "NET_PROBE_REFUSED", "tunnel: bandwidth test refused, another one is running");
+        return;
+    }
+    let started = std::time::Instant::now();
+    match bulk::serve(s).await {
+        Ok(m) => {
+            c.bandwidth_tests.fetch_add(1, Ordering::Relaxed);
+            tracing::info!(received_bytes = m.received, sent_bytes = m.sent,
+                           duration_ms = started.elapsed().as_millis() as u64,
+                           "tunnel: served a bandwidth test");
+        }
+        Err(e) => tracing::warn!(error_code = "NET_PROBE_FAILED", "tunnel: bandwidth test failed: {e}"),
+    }
+    let _ = s.shutdown().await;
+    c.bandwidth_busy.store(false, Ordering::SeqCst);
 }
 
 /// Loopback-only check used to refuse exposing the plaintext worker on a network.

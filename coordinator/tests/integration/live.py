@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
+import pytest
 import uvicorn
 
 from idlemesh_coord.api.app import create_app
@@ -31,6 +32,11 @@ PASS = "live integration test passphrase"
 GB = 10**9
 
 HAVE_STACK = AGENT.exists() and RPC_SERVER.exists() and MODEL_FILE.exists()
+
+# These tests put the coordinator's own stage on "Mac Studio", and the runtime starts llama-server with
+# `-dev MTL0` (Metal). Elsewhere they fail at load, so they are skipped until a CPU head is set up.
+needs_metal_head = pytest.mark.skipif(sys.platform != "darwin",
+                                      reason="coordinator stage needs Metal (MTL0); runs on the Mac only")
 
 
 def free_port() -> int:

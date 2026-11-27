@@ -16,6 +16,7 @@ from datetime import timedelta
 from .. import obs
 from ..store import Store, iso, now, parse
 from ..telemetry import COORDINATOR_NODE as COORDINATOR  # the dst of an edge measured to the coordinator
+from .links import TUNNEL, link_mbps
 from .network import ClusterPolicy, Link, Measurement, assign_ids, combine, components, joins, relayed
 
 log = logging.getLogger("idlemesh_coord.graph")
@@ -57,8 +58,14 @@ def observe(store: Store, node: str, subnet: str | None, rtt_ms: float, rule: Rt
                     " received_at) VALUES (?,?,?,?,?,?,?,?,?)",
                     (node, COORDINATOR, ts.isoformat(timespec="microseconds"), HEARTBEAT, rtt_ms, rtt_ms, org_id,
                      site_id, iso(at))).rowcount == 1
+                if (last is not None and not out["network_changed"]
+                        and rtt_ms - last["rtt_ms_p50"] > max(rule.change_ms, rule.change_frac * last["rtt_ms_p50"])):
+                    out["degraded"] = {"previous": last["rtt_ms_p50"], "current": rtt_ms}
     if out["network_changed"]:
         obs.log(log, logging.INFO, "node changed network", node=node, from_subnet=old, to_subnet=subnet)
+    if "degraded" in out:  # S5.5: a link that got much slower on the same network is worth a look
+        obs.log(log, logging.WARNING, "link to the coordinator degraded", error_code="LINK_DEGRADED", node=node,
+                metric="rtt_ms", **out["degraded"])
     return out
 
 
@@ -73,11 +80,14 @@ def measurements(store: Store, max_age_h: float) -> list[Measurement]:
 
 
 def coordinator_rtt(store: Store, max_age_h: float) -> dict[str, tuple[float, str]]:
-    """Each node's newest RTT to this coordinator, newer than `max_age_h`: {node: (rtt_ms, ts)}."""
+    """Each node's newest RTT to this coordinator, newer than `max_age_h`: {node: (rtt_ms, ts)}.
+
+    Figures timed through the worker tunnel (method `tunnel_test`) are left out: they skip HTTP handling, so mixing
+    them with heartbeat figures would make relayed links between nodes inconsistent."""
     since = iso(now() - timedelta(hours=max_age_h))
     out: dict[str, tuple[float, str]] = {}
-    for r in store.all("SELECT src, ts, rtt_ms_p50 FROM net_edges WHERE dst = ? AND ts >= ?"
-                       " AND rtt_ms_p50 IS NOT NULL ORDER BY ts", (COORDINATOR, since)):
+    for r in store.all("SELECT src, ts, rtt_ms_p50 FROM net_edges WHERE dst = ? AND ts >= ? AND method != ?"
+                       " AND rtt_ms_p50 IS NOT NULL ORDER BY ts", (COORDINATOR, since, TUNNEL)):
         out[r["src"]] = (r["rtt_ms_p50"], r["ts"])
     return out
 
@@ -121,18 +131,22 @@ def recompute(store: Store, nodes: list[str], policy: ClusterPolicy, max_age_h: 
     return summary
 
 
-def network_view(store: Store, devices: dict[str, dict], policy: ClusterPolicy, max_age_h: float) -> dict:
+def network_view(store: Store, devices: dict[str, dict], policy: ClusterPolicy, max_age_h: float,
+                 bandwidth_max_age_h: float = 3 * 168) -> dict:
     """The graph as an administrator sees it: `devices` maps node keys to {"device_id", "name"}. Links and
     clusters are limited to those devices; node keys never leave the coordinator."""
     all_links, nets = links(store, set(devices), max_age_h)
     coord = coordinator_rtt(store, max_age_h)
+    tested = link_mbps(store, bandwidth_max_age_h)
     member = {r["node"]: (r["cluster_id"], r["since"]) for r in store.all("SELECT * FROM node_clusters")}
     clusters: dict[str, list[str]] = {}
     nodes = []
     for key, d in sorted(devices.items(), key=lambda kv: kv[1]["name"]):
         cid, since = member.get(key, (None, None))
         rtt = coord.get(key)
+        bw = tested.get(key)
         nodes.append({**d, "subnet": nets.get(key), "coordinator_rtt_ms": rtt[0] if rtt else None,
+                      "coordinator_mbps": bw[0] if bw else None, "coordinator_mbps_at": bw[1] if bw else None,
                       "cluster_id": cid, "cluster_since": since})
         if cid:
             clusters.setdefault(cid, []).append(d["device_id"])

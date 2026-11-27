@@ -17,7 +17,7 @@ from idlemesh_coord.api.app import create_app
 from idlemesh_coord.config import Settings
 from idlemesh_coord.runtime.llamacpp import LlamaCppRuntime
 
-from live import BIN, LLAMA_SERVER, MODELS, RPC_SERVER  # noqa: E402
+from live import needs_metal_head, BIN, LLAMA_SERVER, MODELS, RPC_SERVER  # noqa: E402
 
 DIGEST = "llama.cpp-v0.9.0"
 
@@ -67,6 +67,7 @@ def events(user, admitted):
         return [json.loads(line[6:]) for line in s.iter_lines() if line.startswith("data: ")]
 
 
+@needs_metal_head
 def test_three_device_deployment_runs_real_inference(tmp_path):
     ports = {"HP EliteBook": (50062, 4), "Ubuntu VM": (50063, 2)}
     workers = start_workers(ports)
@@ -101,6 +102,7 @@ def test_three_device_deployment_runs_real_inference(tmp_path):
             p.terminate()
 
 
+@needs_metal_head
 def test_killing_a_worker_mid_generation_is_a_clear_failure(tmp_path):
     ports = {"HP EliteBook": (50072, 4), "Ubuntu VM": (50073, 2)}
     workers = start_workers(ports)

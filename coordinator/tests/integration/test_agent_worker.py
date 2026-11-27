@@ -19,7 +19,7 @@ from idlemesh_coord.api.app import create_app
 from idlemesh_coord.config import CONTROL_KEEP_ALIVE_S, Settings
 from idlemesh_coord.runtime.llamacpp import LlamaCppRuntime
 
-from live import AGENT, BIN, MODELS, RPC_SERVER  # noqa: E402
+from live import needs_metal_head, AGENT, BIN, MODELS, RPC_SERVER  # noqa: E402
 
 DIGEST = "llama.cpp-v0.9.0"
 PASS = "worker cap test passphrase"
@@ -62,6 +62,7 @@ def coordinator(tmp_path):
     thread.join(20)
 
 
+@needs_metal_head
 def test_lowering_the_cap_kills_the_worker_and_drains_the_deployment(coordinator, tmp_path):
     base = coordinator
     c = httpx.Client(base_url=base, timeout=60)

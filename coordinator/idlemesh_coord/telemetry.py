@@ -128,7 +128,8 @@ def prune(store: Store, retention_days: int) -> int:
     removed = 0
     with store.tx() as c:
         for table, col in (("idle_samples", "ts"), ("node_events", "ts"), ("telemetry_drops", "at"),
-                           ("node_health", "ts"), ("error_events", "ts"), ("net_edges", "ts")):
+                           ("node_health", "ts"), ("error_events", "ts"), ("net_edges", "ts"),
+                           ("predictor_accuracy", "ts")):
             removed += c.execute(f"DELETE FROM {table} WHERE {col} < ?", (cutoff,)).rowcount
     if removed:
         obs.log(log, logging.INFO, "telemetry retention applied", removed=removed, retention_days=retention_days)

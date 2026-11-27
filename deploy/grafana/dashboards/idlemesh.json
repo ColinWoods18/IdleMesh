@@ -2145,6 +2145,332 @@
           "mode": "multi"
         }
       }
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Availability predictor (S6)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 70,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [],
+      "targets": []
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Fleet: predicted vs. actual staying idle (60 min)",
+      "description": "Every accuracy run (predictor.accuracy_every_h) scores the last 24 hours against a fit made without them. Predicted: the mean chance the model gave each idle minute of staying idle for the next hour. Actual: how often it did. The lines should stay together.",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "idlemesh"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 71,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "idlemesh"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/api/v1/metrics/predictor-accuracy",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "from_ms",
+                "value": "${__from}"
+              },
+              {
+                "key": "to_ms",
+                "value": "${__to}"
+              }
+            ]
+          },
+          "root_selector": "",
+          "filters": [],
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "mean_p",
+              "text": "Predicted",
+              "type": "number"
+            },
+            {
+              "selector": "observed",
+              "text": "Actual",
+              "type": "number"
+            },
+            {
+              "selector": "node",
+              "text": "node",
+              "type": "string"
+            }
+          ]
+        }
+      ],
+      "transformations": [
+        {
+          "id": "filterByValue",
+          "options": {
+            "type": "include",
+            "match": "any",
+            "filters": [
+              {
+                "fieldName": "node",
+                "config": {
+                  "id": "equal",
+                  "options": {
+                    "value": "fleet"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "lineWidth": 2,
+            "showPoints": "always",
+            "pointSize": 4,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Drift by node: predicted minus actual",
+      "description": "Above 0: the model was too hopeful about that node; below 0: too gloomy. A node whose line moves away from 0 and stays there has changed its routine (S6.4).",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "idlemesh"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 71,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "idlemesh"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/api/v1/metrics/predictor-accuracy",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "from_ms",
+                "value": "${__from}"
+              },
+              {
+                "key": "to_ms",
+                "value": "${__to}"
+              }
+            ]
+          },
+          "root_selector": "",
+          "filters": [],
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "node",
+              "text": "node",
+              "type": "string"
+            },
+            {
+              "selector": "gap",
+              "text": "gap",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "node"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": -1,
+          "max": 1,
+          "displayName": "${__field.labels.node}",
+          "custom": {
+            "lineWidth": 2,
+            "showPoints": "always",
+            "pointSize": 4,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Brier score by node",
+      "description": "Mean squared error of the predictions (0 is perfect, 0.25 is a coin toss). Compare with the evaluation notebook, experiments/analysis/predictor-evaluation.ipynb (S6.2).",
+      "datasource": {
+        "type": "yesoreyeram-infinity-datasource",
+        "uid": "idlemesh"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 71,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "yesoreyeram-infinity-datasource",
+            "uid": "idlemesh"
+          },
+          "type": "json",
+          "source": "url",
+          "parser": "backend",
+          "format": "table",
+          "url": "/api/v1/metrics/predictor-accuracy",
+          "url_options": {
+            "method": "GET",
+            "data": "",
+            "params": [
+              {
+                "key": "from_ms",
+                "value": "${__from}"
+              },
+              {
+                "key": "to_ms",
+                "value": "${__to}"
+              }
+            ]
+          },
+          "root_selector": "",
+          "filters": [],
+          "columns": [
+            {
+              "selector": "ts",
+              "text": "Time",
+              "type": "timestamp"
+            },
+            {
+              "selector": "node",
+              "text": "node",
+              "type": "string"
+            },
+            {
+              "selector": "brier",
+              "text": "Brier",
+              "type": "number"
+            }
+          ]
+        }
+      ],
+      "transformations": [
+        {
+          "id": "partitionByValues",
+          "options": {
+            "fields": [
+              "node"
+            ],
+            "keepFields": false,
+            "naming": {
+              "asLabels": true
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "decimals": 3,
+          "displayName": "${__field.labels.node}",
+          "custom": {
+            "lineWidth": 2,
+            "showPoints": "always",
+            "pointSize": 4,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     }
   ],
   "templating": {

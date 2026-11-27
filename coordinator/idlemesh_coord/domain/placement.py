@@ -34,6 +34,19 @@ class DeviceProfile:
     not_ready_reason: str | None = None
     node_state: str | None = None    # idle, active, sleeping, draining or serving, as the agent last reported (S2.5)
     rtt_source: str = "heartbeat"        # "tunnel" when timed through the worker tunnel by the coordinator
+    # S6.3: the predicted chance that the node stays usable for the predictor's horizon (None: no predictor), and
+    # the governor's current level (D-12, D-20), which sets the worker's share of the machine.
+    availability: float | None = None
+    availability_basis: str | None = None   # "hour", "node" or "fleet" (predictor.model.Estimate.basis)
+    contribution_level: float | None = None
+    contribution_reason: str | None = None
+
+    @property
+    def effective_bandwidth_gbps(self) -> float:
+        """Measured bandwidth scaled by the contribution level: a node at level 0.5 runs its worker on about half
+        the threads (D-20), so it decodes about half as fast. Memory is not scaled (D-20)."""
+        level = 1.0 if self.contribution_level is None else self.contribution_level
+        return self.mem_bandwidth_gbps * level
 
 
 @dataclass(frozen=True)
@@ -82,7 +95,8 @@ class PlacementPolicy:
     require_all: bool = False          # Test A cooperation topology
     local_device: str | None = None    # device name the coordinator runs locally; others are remote
     backend_cost: BackendCost = LLAMACPP_RPC_V090
-    weights: dict = field(default_factory=lambda: {"bandwidth": 0.4, "latency": 0.3, "power": 0.2, "stability": 0.1})
+    weights: dict = field(default_factory=lambda: {"bandwidth": 0.35, "latency": 0.25, "availability": 0.2,
+                                                   "power": 0.1, "stability": 0.1})
 
 
 def _f_authorized(d, m, p): return None if d.authorized else "device authorization revoked or expired"
@@ -95,6 +109,10 @@ def _f_power(d, m, p):
     if d.power == "unknown" and not d.allow_battery:
         return "power status unknown; battery contribution paused by default"
     return None
+def _f_contribution(d, m, p):
+    if d.contribution_level is not None and d.contribution_level <= 0:
+        return f"contribution level 0 ({d.contribution_reason or 'governor'})"
+    return None
 def _f_digest(d, m, p):
     return None if d.backend_digest == p.backend_digest else f"backend digest {d.backend_digest} differs from {p.backend_digest}"
 def _f_format(d, m, p): return None if m.fmt in d.formats else f"model format {m.fmt} unsupported"
@@ -103,7 +121,7 @@ def _f_budget(d, m, p):
 
 
 FILTERS = [("authorized", _f_authorized), ("ready", _f_ready), ("paused", _f_paused), ("power", _f_power),
-           ("backend_digest", _f_digest), ("format", _f_format), ("budget", _f_budget)]
+           ("contribution", _f_contribution), ("backend_digest", _f_digest), ("format", _f_format), ("budget", _f_budget)]
 
 
 def _usable_bytes(d: DeviceProfile, m: ModelSpec, p: PlacementPolicy) -> int:
@@ -128,16 +146,21 @@ def stage_network_ms(rtt_ms: float, link_mbps: float | None, cost: "BackendCost"
 
 def _score(d: DeviceProfile, peers: list[DeviceProfile], p: "PlacementPolicy") -> dict:
     w = p.weights
-    max_bw = max(x.mem_bandwidth_gbps for x in peers) or 1.0
+    max_bw = max(x.effective_bandwidth_gbps for x in peers) or 1.0
     parts = {
-        "bandwidth": d.mem_bandwidth_gbps / max_bw,
+        "bandwidth": d.effective_bandwidth_gbps / max_bw,  # capacity weighted by contribution level (S6.3)
         # A slow link costs every token, as a long round trip does (S5.3).
         "latency": 1.0 / (1.0 + stage_network_ms(d.rtt_ms, d.link_mbps, p.backend_cost) / 50.0),
+        # Likely to stay idle for the predictor's horizon (S6.3); without a predictor every node counts as 1.
+        "availability": 1.0 if d.availability is None else d.availability,
         "power": {"ac": 1.0, "battery": 0.3}.get(d.power, 0.0),
         "stability": d.stability,
     }
     parts = {k: round(v, 4) for k, v in parts.items()}
-    return {"total": round(sum(w[k] * v for k, v in parts.items()), 4), "components": parts}
+    return {"total": round(sum(w.get(k, 0.0) * v for k, v in parts.items()), 4), "components": parts,
+            "inputs": {"contribution_level": d.contribution_level, "contribution_reason": d.contribution_reason,
+                       "effective_bandwidth_gbps": round(d.effective_bandwidth_gbps, 2),
+                       "availability_basis": d.availability_basis}}
 
 
 def plan(devices: list[DeviceProfile], model: ModelSpec, policy: PlacementPolicy) -> dict:
@@ -199,7 +222,9 @@ def plan(devices: list[DeviceProfile], model: ModelSpec, policy: PlacementPolicy
             "weights_bytes": weights, "kv_bytes": kv, "runtime_bytes": model.runtime_overhead_bytes,
             "headroom_bytes": d.budget_bytes - int(d.budget_bytes * (1 - policy.headroom_fraction)),
             "budget_bytes": d.budget_bytes, "margin_bytes": _usable_bytes(d, model, policy) + model.runtime_overhead_bytes - need,
-            "est_compute_ms": round(weights / (d.mem_bandwidth_gbps * GB) * 1000, 2),
+            "contribution_level": d.contribution_level, "effective_bandwidth_gbps": round(d.effective_bandwidth_gbps, 2),
+            "availability": d.availability, "availability_basis": d.availability_basis,
+            "est_compute_ms": round(weights / (d.effective_bandwidth_gbps * GB) * 1000, 2),
             "rtt_ms": d.rtt_ms, "rtt_source": d.rtt_source, "link_mbps": d.link_mbps, "link_source": d.link_source,
         })
         start += n

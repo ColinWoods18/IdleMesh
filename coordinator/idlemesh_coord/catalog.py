@@ -40,3 +40,6 @@ MODEL_FILES: dict[str, dict] = {
         "license": "apache-2.0",
     },
 }
+
+# The reference model every worker times for the decode probe (S5.6). The agent's default catalog name.
+PROBE_MODEL = "qwen2.5-0.5b-q8"

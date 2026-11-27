@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from .. import graph, obs, partition, telemetry
-from ..catalog import CATALOG, MODEL_FILES
+from ..catalog import CATALOG, MODEL_FILES, PROBE_MODEL
 from ..config import Settings
 from ..domain.access import Branch, ForkError, Principal, Role, Scope, Visibility, can_create_with_visibility, \
     can_delete_branch, can_read_branch, can_write_branch, plan_fork
@@ -148,6 +148,29 @@ def _restore_deployments(app) -> None:
         c.execute("UPDATE requests SET status = 'failed', error_code = 'COORDINATOR_RESTART', updated_at = ? "
                   "WHERE status NOT IN ('completed','cancelled','failed','expired')", (iso(now()),))
         c.execute("UPDATE deployments SET state = 'unavailable' WHERE state = 'ready'")
+
+
+_UNSET = object()
+
+
+def probe_offer(app) -> dict | None:
+    """The decode-probe model this coordinator can serve (S5.6), or None. Worked out once: the runtime
+    verifies the file's SHA-256 the first time, which takes a moment for a large file."""
+    offer = getattr(app.state, "probe_offer", _UNSET)
+    if offer is _UNSET:
+        offer = None
+        meta, model_path = MODEL_FILES.get(PROBE_MODEL), getattr(app.state.runtime, "model_path", None)
+        if meta and model_path:
+            try:
+                path = model_path(PROBE_MODEL)
+                offer = {"catalog": PROBE_MODEL, "file": meta["file"], "sha256": meta["sha256"],
+                         "nbytes": path.stat().st_size, "license": meta["license"],
+                         "url": "/api/v1/devices/{device_id}/probe-model"}
+            except RuntimeFailure as e:
+                obs.log(log, logging.WARNING, "decode-probe model unavailable; workers keep the memory-copy figure",
+                        error_code="PROBE_FAILED", reason=e.code)
+        app.state.probe_offer = offer
+    return offer
 
 
 def cluster_policy(settings: Settings) -> graph.ClusterPolicy:
@@ -650,6 +673,11 @@ def register(app: FastAPI) -> None:
         g = request.app.state.scheduler.group(d["group_id"])
         stage = next((s for s in (g.placement or {}).get("stages", []) if s["device_id"] == device_id), None)
         public_policy = {k: v for k, v in policy.items() if k != "reported_paused"}
+        # A worker without a decode probe yet is told where to get the reference model (S5.6).
+        offer = None
+        if body.worker and body.capabilities.decode_probe is None:
+            offer = await run_in_threadpool(probe_offer, request.app)
+            offer = offer and {**offer, "url": offer["url"].format(device_id=device_id)}
         pending = request.app.state.prefetch.get(d["group_id"])
         manifest = pending["manifests"].get(device_id) if pending else None
         return {"policy": public_policy, "policy_rev": d["policy_rev"], "lease_s": 30,
@@ -657,6 +685,7 @@ def register(app: FastAPI) -> None:
                 # Lets the agent tag its own and its worker's log lines with the requests it is serving (D-11).
                 "active_request_ids": sorted(g.running) if stage else [],
                 "prefetch": {"deployment_id": pending["deployment_id"], **manifest} if manifest else None,
+                "decode_probe_model": offer,
                 "telemetry": {"interval_s": settings.telemetry_interval_s, "idle_after_s": settings.idle_after_s},
                 # Contribution governor settings (S4.9): the agent applies them locally, under its owner's ceiling.
                 "contribution": {"idle_after_s": settings.idle_after_s, "ramp_s": settings.ramp_s,
@@ -733,6 +762,22 @@ def register(app: FastAPI) -> None:
         return StreamingResponse(chunks(), status_code=206, media_type="application/octet-stream",
                                  headers={"Content-Range": f"bytes {start}-{end - 1}/{path.stat().st_size}",
                                           "Content-Length": str(end - start)})
+
+    @app.get("/api/v1/devices/{device_id}/probe-model", tags=["devices"])
+    async def probe_model(device_id: str, request: Request):
+        """The decode-probe reference model (S5.6), whole, for an enrolled device over the pinned channel."""
+        _device_by_token(request, device_id)
+        offer = await run_in_threadpool(probe_offer, request.app)
+        if not offer:
+            raise ApiError(404, "PROBE_MODEL_UNAVAILABLE", "This coordinator has no decode-probe model to serve.")
+        path = request.app.state.runtime.model_path(PROBE_MODEL)
+
+        def chunks():
+            with open(path, "rb") as f:
+                while data := f.read(1 << 20):
+                    yield data
+        return StreamingResponse(chunks(), media_type="application/octet-stream",
+                                 headers={"Content-Length": str(offer["nbytes"])})
 
     @app.patch("/api/v1/devices/{device_id}/policy", tags=["devices"])
     async def update_policy(device_id: str, body: PolicyPatch, request: Request, p: Principal = Depends(current)):

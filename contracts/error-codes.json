@@ -33,6 +33,7 @@
     {"code": "STATE_WRITE_FAILED", "area": "node", "http": null, "retryable": false, "meaning": "Agent: the state file could not be written or restricted to its owner."},
     {"code": "CONFIG_INVALID", "area": "node", "http": null, "retryable": false, "meaning": "A command-line option or configuration value is invalid."},
     {"code": "PROBE_FAILED", "area": "node", "http": null, "retryable": true, "meaning": "Agent: a hardware or decode probe failed; the node reports without that measurement."},
+    {"code": "PROBE_MODEL_UNAVAILABLE", "area": "node", "http": 404, "retryable": false, "meaning": "The coordinator has no decode-probe reference model to serve, so workers keep the memory-copy figure."},
     {"code": "TELEMETRY_NO_CONSENT", "area": "node", "http": 403, "retryable": false, "meaning": "The device's owner has not consented to idle-data collection, so the coordinator refuses its telemetry."},
     {"code": "TELEMETRY_UPLOAD_FAILED", "area": "node", "http": null, "retryable": true, "meaning": "Agent: buffered telemetry could not be delivered; it stays on disk and is retried."},
     {"code": "TELEMETRY_REJECTED", "area": "node", "http": null, "retryable": false, "meaning": "Agent: the coordinator refused a telemetry batch as invalid; the batch was dropped and counted as lost."},

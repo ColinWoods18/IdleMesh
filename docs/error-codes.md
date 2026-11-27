@@ -59,6 +59,7 @@ one code can be followed across components and counted in metrics.
 | `INVALID_DEVICE_KEY` | 400 | no | The device certificate sent at enrollment could not be parsed. |
 | `LEASE_EXPIRED` | — | yes | Agent: no heartbeat succeeded within the lease, so assigned work was released. |
 | `PROBE_FAILED` | — | yes | Agent: a hardware or decode probe failed; the node reports without that measurement. |
+| `PROBE_MODEL_UNAVAILABLE` | 404 | no | The coordinator has no decode-probe reference model to serve, so workers keep the memory-copy figure. |
 | `STATE_UNREADABLE` | — | no | Agent: the state file is missing or corrupt; enroll the node again. |
 | `STATE_WRITE_FAILED` | — | no | Agent: the state file could not be written or restricted to its owner. |
 | `TELEMETRY_BUFFER_FULL` | — | no | Agent: the telemetry buffer reached its size limit and dropped its oldest records; the count is reported. |

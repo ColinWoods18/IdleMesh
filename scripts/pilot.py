@@ -167,6 +167,7 @@ def show_stages(expl: dict) -> None:
         print(f"  {s['name']:<16} layers {s['layers'][0]:>3}-{s['layers'][1] - 1:<3} "
               f"head={'yes' if s.get('holds_output_head') else 'no ':<3} transport={s.get('transport', 'local'):<9} "
               f"endpoint={s.get('endpoint') or '-':<22} rtt={s.get('rtt_ms', 0)} ms ({s.get('rtt_source', 'heartbeat')})"
+              f" bw={s.get('bandwidth_gbps')} GB/s ({s.get('bandwidth_source', 'reported')})"
               + (f", planned with {s['planned_rtt_ms']} ms" if "planned_rtt_ms" in s else "")
               + (f"  [rtt measurement failed: {s['rtt_measurement_error']}]" if s.get("rtt_measurement_error") else ""))
     planned = expl.get("planned_latency_budget")

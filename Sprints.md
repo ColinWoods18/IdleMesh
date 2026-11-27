@@ -229,7 +229,8 @@ we can find out why without visiting it.
 
 | ID | Status |
 |---|---|
-| S5.4 | ✅ `graph/` package: links from measurements (the worse direction counts), threshold rule (median RTT ≤ 5 ms, and ≥ 100 Mbps once bandwidth is measured), connected components, cluster IDs that survive a node joining or leaving. Recomputed every 5 minutes; changes logged. `net_edge` telemetry records and the admin `GET .../network` view. No networkx yet (D-22). Unit and API tests; real measurements wait for S5.1 |
+| S5.4 | ✅ `graph/` package: links from measurements (the worse direction counts), threshold rule (median RTT ≤ 5 ms, and ≥ 100 Mbps once bandwidth is measured), connected components, cluster IDs that survive a node joining or leaving. Recomputed every 5 minutes; changes logged. `net_edge` telemetry records and the admin `GET .../network` view. networkx graph (D-22). Unit and API tests; real measurements wait for S5.1 |
+| S5.6 | 🔧 Every worker probes by default: llama-bench beside the worker, the reference model offered by the coordinator and verified by SHA-256, the benchmark only while the governor allows contribution (D-23). Live-tested on the dev PC. **Acceptance waits on S5.2 + S5.3:** the probe fixes the two-machine run (−34.5% → about −26%) but not the three-machine one, whose gap is the unmeasured link traffic |
 
 ## Sprint 6 · Availability predictor; Phase 1 exit
 

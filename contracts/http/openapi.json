@@ -2613,6 +2613,47 @@
         ]
       }
     },
+    "/api/v1/devices/{device_id}/probe-model": {
+      "get": {
+        "description": "The decode-probe reference model (S5.6), whole, for an enrolled device over the pinned channel.",
+        "operationId": "probe_model_api_v1_devices__device_id__probe_model_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "title": "Device Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Probe Model",
+        "tags": [
+          "devices"
+        ]
+      }
+    },
     "/api/v1/devices/{device_id}/telemetry": {
       "post": {
         "description": "Idle samples, state changes, health and error counts from an agent's on-disk buffer (S2.3, S2.4,\nS3.5). Repeats are ignored. Each record kind needs its own consent: idle data or diagnostics.",
